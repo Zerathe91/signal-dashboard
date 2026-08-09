@@ -26,7 +26,6 @@ CREDENTIALS_FILE = "credentials.json"
 HISTORY_FILE     = "history.csv"
 REFRESH_SECONDS  = 60
  
-
 # ── Trending indicators (momentum / trend-following) ──────────────────────────
 TRENDING_INDICATORS = [
     "Bullish Swing",
@@ -184,7 +183,13 @@ def cell_colour(d):
 
 @st.cache_data(ttl=REFRESH_SECONDS)
 def load_live_data():
-    gc    = gspread.service_account(filename=CREDENTIALS_FILE)
+    # On Streamlit Cloud, credentials are stored as a TOML table in st.secrets
+    # Locally, fall back to credentials.json file
+    try:
+        creds_dict = dict(st.secrets["GOOGLE_CREDENTIALS"])
+        gc = gspread.service_account_from_dict(creds_dict)
+    except (KeyError, Exception):
+        gc = gspread.service_account(filename=CREDENTIALS_FILE)
     sheet = gc.open_by_key(GOOGLE_SHEET_ID).sheet1
     rows  = sheet.get_all_values()
     if len(rows) < 3:
