@@ -37,8 +37,8 @@ TRENDING_INDICATORS = [
 ]
 
 TRENDING_RULES = {
-    "Bullish Swing":  [(2, 3), (5, 2), (10, 1)],
-    "Bottom Hourly":  [(2, 3), (5, 2), (10, 1)],
+    "Bullish Swing":  [(2, 6), (5, 4), (10, 2), (20, 1)],
+    "Bottom Hourly":  [(2, 6), (5, 4), (10, 2), (20, 1)],
     "Trending Buy":   [(2, 3), (5, 2), (10, 1)],
     "Hourly Breakout":[(2, 3), (5, 2), (10, 1)],
     "Scoreboard":     [(2, 3), (5, 2), (10, 1)],
@@ -64,8 +64,8 @@ REVERSAL_INDICATORS = [
 REVERSAL_RULES = {
     "Hourly Bullish Divergence": [(2, 3), (5, 2), (10, 1)],
     "Golden Pocket":             [(2, 3), (5, 2), (10, 1)],
-    "Major Bottom":              [(2, 4), (5, 3), (10, 2), (20, 1)],
-    "Bottom Daily":              [(2, 4), (5, 3), (10, 2), (20, 1)],
+    "Major Bottom":              [(2, 6), (5, 4), (10, 2), (20, 1)],
+    "Bottom Daily":              [(2, 6), (5, 4), (10, 2), (20, 1)],
     "Mean Reversion":            [(2, 3), (5, 2), (10, 1)],
 }
 
@@ -174,9 +174,9 @@ def score_badge_colour(score: int, max_val: int):
 
 def cell_colour(d):
     if d is None: return {"bg": "#111111", "fg": "#333333"}
-    if d <= 1:    return {"bg": "#003020", "fg": "#00e676"}
-    if d <= 3:    return {"bg": "#1a3a1a", "fg": "#4caf50"}
-    if d <= 5:    return {"bg": "#1e3a00", "fg": "#8bc34a"}
+    if d <= 2:    return {"bg": "#003020", "fg": "#00e676"}
+    if d <= 5:    return {"bg": "#1a3a1a", "fg": "#4caf50"}
+    if d <= 10:   return {"bg": "#1e3a00", "fg": "#8bc34a"}
     return               {"bg": "#1a1a1a", "fg": "#444444"}
 
 # ─── DATA LOADING ─────────────────────────────────────────────────────────────
@@ -970,9 +970,9 @@ with col_leg3:
 
 st.markdown(
     '<br>'
-    '<span style="background:#003020;color:#00e676;padding:3px 8px;border-radius:4px;font-size:12px;">● Today (0–1td)</span>&nbsp;'
-    '<span style="background:#1a3a1a;color:#4caf50;padding:3px 8px;border-radius:4px;font-size:12px;">● ≤ 3td</span>&nbsp;'
-    '<span style="background:#1e3a00;color:#8bc34a;padding:3px 8px;border-radius:4px;font-size:12px;">● ≤ 5td</span>&nbsp;'
+    '<span style="background:#003020;color:#00e676;padding:3px 8px;border-radius:4px;font-size:12px;">● ≤ 2td</span>&nbsp;'
+    '<span style="background:#1a3a1a;color:#4caf50;padding:3px 8px;border-radius:4px;font-size:12px;">● ≤ 5td</span>&nbsp;'
+    '<span style="background:#1e3a00;color:#8bc34a;padding:3px 8px;border-radius:4px;font-size:12px;">● ≤ 10td</span>&nbsp;'
     '<span style="background:#1a1a1a;color:#444;padding:3px 8px;border-radius:4px;font-size:12px;">● Older</span>&nbsp;'
     '<span style="background:#111;color:#333;padding:3px 8px;border-radius:4px;font-size:12px;">● No signal</span>',
     unsafe_allow_html=True,
