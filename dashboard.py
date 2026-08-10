@@ -37,12 +37,12 @@ TRENDING_INDICATORS = [
 ]
 
 TRENDING_RULES = {
-    "Bullish Swing":  [(1, 2), (3, 1)],
-    "Bottom Hourly":  [(1, 2), (3, 1)],
-    "Trending Buy":   [(1, 2), (3, 1)],
-    "Hourly Breakout":[(1, 2), (3, 1)],
-    "Scoreboard":     [(1, 2), (3, 1)],
-    "KovaScore":      [(1, 2), (3, 1)],
+    "Bullish Swing":  [(2, 3), (5, 2), (10, 1)],
+    "Bottom Hourly":  [(2, 3), (5, 2), (10, 1)],
+    "Trending Buy":   [(2, 3), (5, 2), (10, 1)],
+    "Hourly Breakout":[(2, 3), (5, 2), (10, 1)],
+    "Scoreboard":     [(2, 3), (5, 2), (10, 1)],
+    "KovaScore":      [(2, 3), (5, 2), (10, 1)],
 }
 
 MAX_TRENDING = sum(r[0][1] for r in TRENDING_RULES.values() if r)
@@ -62,11 +62,11 @@ REVERSAL_INDICATORS = [
 ]
 
 REVERSAL_RULES = {
-    "Hourly Bullish Divergence": [(1, 2), (3, 1)],
-    "Golden Pocket":             [(1, 2), (3, 1)],
-    "Major Bottom":              [(1, 4), (3, 2), (5, 1)],
-    "Bottom Daily":              [(1, 4), (3, 2), (5, 1)],
-    "Mean Reversion":            [(1, 2), (3, 1)],
+    "Hourly Bullish Divergence": [(2, 3), (5, 2), (10, 1)],
+    "Golden Pocket":             [(2, 3), (5, 2), (10, 1)],
+    "Major Bottom":              [(2, 4), (5, 3), (10, 2), (20, 1)],
+    "Bottom Daily":              [(2, 4), (5, 3), (10, 2), (20, 1)],
+    "Mean Reversion":            [(2, 3), (5, 2), (10, 1)],
 }
 
 MAX_REVERSAL = sum(r[0][1] for r in REVERSAL_RULES.values() if r)
