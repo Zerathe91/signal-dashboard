@@ -696,7 +696,7 @@ available_dates = get_available_dates(history)
 with st.sidebar:
     st.title("⚙️ Controls")
 
-    view_mode = st.radio("View", ["📡 Live", "📅 Historical"], horizontal=True)
+    view_mode = st.radio("View", ["📡 Live", "📅 Historical", "🔔 Change Log", "📖 Definitions"], horizontal=False)
 
     treemap_mode_label = st.radio(
         "Heatmap style",
@@ -726,16 +726,22 @@ with st.sidebar:
         min_trending = 0; min_reversal = 0; min_signals = 1
         must_have = []; ticker_filter = []; sort_by = "Score (high→low)"
 
+    elif view_mode in ("🔔 Change Log", "📖 Definitions"):
+        selected_date = compare_date = None
+        section_filter = []; freshness_days = None; min_score = 0
+        min_trending = 0; min_reversal = 0; min_signals = 1
+        must_have = []; ticker_filter = []; sort_by = "Total score (high→low)"
+
     else:
         selected_date = compare_date = None
 
         freshness_label = st.selectbox(
             "Show signals triggered within",
-            ["All time", "Last 1 trading day", "Last 3 trading days",
+            ["All time", "Today only", "Last 1 trading day", "Last 3 trading days",
              "Last 5 trading days", "Last 90 days"], index=0,
         )
         freshness_days = {
-            "All time": None, "Last 1 trading day": 1,
+            "All time": None, "Today only": 0, "Last 1 trading day": 1,
             "Last 3 trading days": 3, "Last 5 trading days": 5, "Last 90 days": 90,
         }[freshness_label]
 
@@ -842,6 +848,222 @@ if view_mode == "📅 Historical":
     st.markdown("---")
     st.subheader("📋 Scores on this date")
     st.markdown(build_historical_table(hist_day, compare_day if not compare_day.empty else None), unsafe_allow_html=True)
+    st.stop()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CHANGE LOG VIEW
+# ══════════════════════════════════════════════════════════════════════════════
+
+if view_mode == "🔔 Change Log":
+    st.title("🔔 Change Log")
+    st.caption(f"Showing recent signals as of {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.markdown("---")
+
+    with st.spinner("Loading data..."):
+        df_cl = load_live_data()
+
+    if df_cl.empty:
+        st.error("No data found.")
+        st.stop()
+
+    df_cl["_trending_score"] = df_cl.apply(compute_trending_score, axis=1)
+    df_cl["_reversal_score"]  = df_cl.apply(compute_reversal_score,  axis=1)
+    df_cl["_score"]           = df_cl["_trending_score"] + df_cl["_reversal_score"]
+
+    WATCH_INDICATORS = ["Bullish Swing", "Bottom Hourly", "Bottom Daily", "Major Bottom"]
+
+    for ind in WATCH_INDICATORS:
+        st.subheader(f"📌 {ind}")
+        date_col = f"{ind} Date"
+        price_col = f"{ind} Price"
+        if date_col not in df_cl.columns:
+            st.info("No data for this indicator.")
+            continue
+
+        recent = df_cl.copy()
+        recent["_days"] = recent[date_col].apply(days_ago)
+        recent = recent[recent["_days"].notna() & (recent["_days"] <= 5)].copy()
+        recent = recent.sort_values("_days")
+
+        if recent.empty:
+            st.info(f"No signals in the last 5 trading days.")
+        else:
+            rows = []
+            for _, r in recent.iterrows():
+                rows.append({
+                    "Ticker":   r["Ticker"],
+                    "Section":  r.get("Section", ""),
+                    "Date":     r[date_col][:10] if r[date_col] else "—",
+                    "Price":    f"${r[price_col]}" if r.get(price_col) else "—",
+                    "Days Ago": int(r["_days"]),
+                    "Total Score": int(r["_score"]),
+                })
+            st.dataframe(pd.DataFrame(rows).set_index("Ticker"), use_container_width=True)
+        st.markdown("---")
+
+    st.subheader("🏆 Tickers above 15 points")
+    high_scorers = df_cl[df_cl["_score"] >= 15].sort_values("_score", ascending=False)
+    if high_scorers.empty:
+        st.info("No tickers currently above 15 points.")
+    else:
+        display = high_scorers[["Ticker", "Section", "_trending_score", "_reversal_score", "_score"]].rename(columns={
+            "_trending_score": "Trend", "_reversal_score": "Reversal", "_score": "Total"
+        }).set_index("Ticker")
+        st.dataframe(display, use_container_width=True)
+
+    st.stop()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DEFINITIONS VIEW
+# ══════════════════════════════════════════════════════════════════════════════
+
+if view_mode == "📖 Definitions":
+    st.title("📖 Indicator Definitions")
+    st.caption("What each signal means, what timeframe it runs on, and how it scores.")
+    st.markdown("---")
+
+    DEFS = [
+        {
+            "name": "🔵 Bullish Swing",
+            "category": "Trending",
+            "scoring": "≤2td: 6pts | ≤5td: 4pts | ≤10td: 2pts | ≤20td: 1pt",
+            "description": (
+                "Fires on the **5-minute** chart when the 140-period MA crosses above the 625-period MA, "
+                "signalling that short-term momentum has turned bullish on the intraday trend. "
+                "One of the two highest-weighted trending signals due to its reliability as a momentum confirmation."
+            ),
+        },
+        {
+            "name": "🔵 Bottom Hourly",
+            "category": "Trending",
+            "scoring": "≤2td: 6pts | ≤5td: 4pts | ≤10td: 2pts | ≤20td: 1pt",
+            "description": (
+                "A buy signal on the **hourly** chart that combines a Supertrend flip (from bearish to bullish) "
+                "with a new-low condition and an RSI oversold filter — it fires when price has been making new lows "
+                "but momentum is starting to reverse upward. One of the two highest-weighted trending signals."
+            ),
+        },
+        {
+            "name": "🔵 Trending Buy",
+            "category": "Trending",
+            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
+            "description": (
+                "The same reversal algorithm as Bottom Hourly but applied to the **10-minute** timeframe, "
+                "providing an earlier, more sensitive confirmation that a short-term bottom may be forming."
+            ),
+        },
+        {
+            "name": "🔵 Hourly Breakout",
+            "category": "Trending",
+            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
+            "description": (
+                "Fires on the **hourly** chart when the bar-count since the last price bottom crosses above "
+                "the bar-count since the last price top — indicating that a new bullish structure is taking over "
+                "from the prior bearish one. The background turns blue while bullish."
+            ),
+        },
+        {
+            "name": "🔵 Scoreboard",
+            "category": "Trending",
+            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
+            "description": (
+                "A composite dashboard score (out of 6) that checks: 140MA > 625MA on the 5-minute chart, "
+                "a recent hourly buy signal, a recent 5-minute buy signal, price above the 20D SMA, "
+                "price above the 50D SMA, and a volume spike at the open. "
+                "Alert fires when the score reaches **4 or above**."
+            ),
+        },
+        {
+            "name": "🔵 KovaScore",
+            "category": "Trending",
+            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
+            "description": (
+                "A proprietary stock health score (1–99) combining relative strength vs 63-day return, "
+                "EMA stack alignment (10/20/50/200), distance from the 52-week high, volume trend, "
+                "and price position vs the 200 SMA. Alert fires when the score crosses **75 or above**."
+            ),
+        },
+        {
+            "name": "⚪ Volume Spike",
+            "category": "Observation",
+            "scoring": "Observation only — no score",
+            "description": (
+                "Detects when the first 30 minutes of market open volume exceeds **1.5× the average** "
+                "of the same opening window over the prior 7 trading days. "
+                "Used as a confirmation signal rather than a standalone buy signal — no score is awarded."
+            ),
+        },
+        {
+            "name": "🟢 Hourly Bullish Divergence",
+            "category": "Reversal",
+            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
+            "description": (
+                "Fires on the **hourly** chart when price makes a lower low but the RSI makes a higher low — "
+                "a classic bullish divergence pattern indicating weakening selling pressure and a potential "
+                "trend reversal to the upside."
+            ),
+        },
+        {
+            "name": "🟢 Golden Pocket",
+            "category": "Reversal",
+            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
+            "description": (
+                "Fires when price on the **hourly** chart enters the 0.618–0.786 Fibonacci retracement zone "
+                "calculated from the swing high and low of the last 500 candles. "
+                "This zone is considered a high-probability support area for a bounce after a pullback."
+            ),
+        },
+        {
+            "name": "🟢 Major Bottom",
+            "category": "Reversal",
+            "scoring": "≤2td: 6pts | ≤5td: 4pts | ≤10td: 2pts | ≤20td: 1pt",
+            "description": (
+                "A multi-condition **daily** reversal finder that first requires three hard filters (price below "
+                "200D SMA, in a downtrend >30 days, no new 30-day high), then scores accumulation signals "
+                "including no new lows, RSI divergence, up-volume dominance, OBV trending up, a 4H reversal, "
+                "and EMA-20 flattening. Alert fires when the composite score reaches the threshold. "
+                "One of the two highest-weighted reversal signals."
+            ),
+        },
+        {
+            "name": "🟢 Bottom Daily",
+            "category": "Reversal",
+            "scoring": "≤2td: 6pts | ≤5td: 4pts | ≤10td: 2pts | ≤20td: 1pt",
+            "description": (
+                "The same Supertrend + RSI filter reversal algorithm used by Bottom Hourly, applied to the "
+                "**daily** timeframe. Fires when the daily Supertrend flips bullish after a period of new lows "
+                "with RSI recently oversold — a higher-timeframe confirmation of a potential base. "
+                "One of the two highest-weighted reversal signals."
+            ),
+        },
+        {
+            "name": "🟢 Mean Reversion",
+            "category": "Reversal",
+            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
+            "description": (
+                "Fires on the **hourly** chart when at least 2 of 3 conditions are met: price at or below "
+                "the lower Bollinger Band, RSI recently below 40, or price more than 1.5% below the 50 EMA. "
+                "Only triggers when price is above the 200-day DMA, filtering out downtrending stocks."
+            ),
+        },
+    ]
+
+    for d in DEFS:
+        cat_color = {"Trending": "#0d2a45", "Observation": "#1a1a2a", "Reversal": "#0d3020"}.get(d["category"], "#1a1a1a")
+        cat_text  = {"Trending": "#90caf9", "Observation": "#888888", "Reversal": "#80cbc4"}.get(d["category"], "#aaa")
+        st.markdown(
+            f'<div style="background:{cat_color}; border-left: 4px solid {cat_text}; '
+            f'padding: 14px 18px; border-radius: 6px; margin-bottom: 12px;">'
+            f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+            f'<span style="font-size:16px; font-weight:bold; color:#e0e0e0;">{d["name"]}</span>'
+            f'<span style="font-size:11px; background:#1a1a1a; color:{cat_text}; padding:3px 10px; border-radius:12px;">{d["category"]}</span>'
+            f'</div>'
+            f'<div style="font-size:11px; color:#666; margin:6px 0 8px 0;">📊 {d["scoring"]}</div>'
+            f'<div style="font-size:13px; color:#bbb; line-height:1.6;">{d["description"]}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
     st.stop()
 
 # ══════════════════════════════════════════════════════════════════════════════
