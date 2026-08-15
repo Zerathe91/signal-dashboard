@@ -76,6 +76,18 @@ INDICATORS = TRENDING_INDICATORS + OBSERVATION_INDICATORS + REVERSAL_INDICATORS
 SCORE_RULES = {**TRENDING_RULES, **{"Volume Spike": []}, **REVERSAL_RULES}
 MAX_SCORE   = MAX_TRENDING + MAX_REVERSAL
  
+# ── Hourly JY Score fields (from the Discord "Hourly JY Score" cards) ─────────
+# These are plain columns straight from the sheet — no date-based scoring,
+# just shown as-is right after Section.
+JY_FIELDS = [
+    "JY Score",
+    "Health",
+    "Momentum",
+    "ATR from 20D MA",
+    "Stretch Status",
+    "Vol Pace vs Avg",
+]
+ 
 CHART_BG   = "#0e1117"
 CHART_GRID = "#1e222d"
 CHART_TEXT = "#aaaaaa"
@@ -562,6 +574,8 @@ def build_html_table(df: pd.DataFrame) -> str:
     html.append('<tr>')
     html.append('<th rowspan="2" style="padding:6px 10px; text-align:left; background:#1e222d; color:#aaa;">Ticker</th>')
     html.append('<th rowspan="2" style="padding:6px 10px; text-align:left; background:#1e222d; color:#aaa;">Section</th>')
+    for field in JY_FIELDS:
+        html.append(f'<th rowspan="2" style="padding:6px 6px; background:#2a1e3a; color:#c9a6ff; font-size:11px;">{field}</th>')
     html.append('<th rowspan="2" style="padding:6px 6px; background:#1e222d; color:#aaa;">Trend</th>')
     html.append('<th rowspan="2" style="padding:6px 6px; background:#1e222d; color:#aaa;">Rev</th>')
     html.append('<th rowspan="2" style="padding:6px 6px; background:#1e222d; color:#aaa;">Total</th>')
@@ -593,6 +607,9 @@ def build_html_table(df: pd.DataFrame) -> str:
         html.append('<tr style="border-bottom:1px solid #1a1a1a;">')
         html.append(f'<td style="padding:5px 10px; color:#e0e0e0;">{ticker}</td>')
         html.append(f'<td style="padding:5px 8px; color:#888; font-size:11px;">{section}</td>')
+        for field in JY_FIELDS:
+            val = row.get(field, "") or "—"
+            html.append(f'<td style="padding:5px 6px; background:#1a1428; color:#d8c7f2; font-size:11px; white-space:nowrap;">{val}</td>')
         html.append(score_cell(t_score, MAX_TRENDING))
         html.append(score_cell(r_score, MAX_REVERSAL))
         # Total
@@ -608,7 +625,10 @@ def build_html_table(df: pd.DataFrame) -> str:
             price_val = row.get(f"{ind} Price", "")
             d = days_ago(date_val)
             c = cell_colour(d)
-            short_date = date_val[:10] if date_val else "—"
+            # date_val is "YYYY-MM-DD HH:MM" for most indicators (date-only
+            # for a few legacy rows or the JY Score channel) — show it as-is
+            # so the time comes through, don't truncate to just the date.
+            short_date = date_val.strip() if date_val and date_val.strip() else "—"
             price_disp = f"${price_val}" if price_val else "—"
  
             # Observation column gets slightly different bg tint
@@ -757,7 +777,7 @@ with st.sidebar:
         section_filter = []
         ticker_filter  = []
         sort_by = st.selectbox("Sort by", [
-            "Total score (high→low)", "Trending score (high→low)",
+            "Total score (high→low)", "JY Score (high→low)", "Trending score (high→low)",
             "Reversal score (high→low)", "Signals (high→low)", "Ticker (A→Z)"
         ])
  
@@ -893,7 +913,7 @@ if view_mode == "🔔 Change Log":
                 rows.append({
                     "Ticker":   r["Ticker"],
                     "Section":  r.get("Section", ""),
-                    "Date":     r[date_col][:10] if r[date_col] else "—",
+                    "Date":     r[date_col].strip() if r[date_col] and r[date_col].strip() else "—",
                     "Price":    f"${r[price_col]}" if r.get(price_col) else "—",
                     "Days Ago": int(r["_days"]),
                     "Total Score": int(r["_score"]),
@@ -1084,6 +1104,7 @@ df["_trending_score"] = df.apply(compute_trending_score, axis=1)
 df["_reversal_score"]  = df.apply(compute_reversal_score,  axis=1)
 df["_score"]           = df["_trending_score"] + df["_reversal_score"]
 df["_signal_count"]    = df.apply(signal_count, axis=1)
+df["_jy_score_num"]    = pd.to_numeric(df["JY Score"], errors="coerce") if "JY Score" in df.columns else pd.NA
  
 # Sidebar section/ticker filters (populated after data load)
 all_sections = sorted([s for s in df["Section"].dropna().unique() if s.strip()])
@@ -1117,6 +1138,8 @@ if ticker_filter:
  
 if sort_by == "Total score (high→low)":
     filtered = filtered.sort_values("_score", ascending=False)
+elif sort_by == "JY Score (high→low)":
+    filtered = filtered.sort_values("_jy_score_num", ascending=False, na_position="last")
 elif sort_by == "Trending score (high→low)":
     filtered = filtered.sort_values("_trending_score", ascending=False)
 elif sort_by == "Reversal score (high→low)":
