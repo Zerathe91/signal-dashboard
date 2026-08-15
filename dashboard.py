@@ -184,6 +184,20 @@ def score_badge_colour(score: int, max_val: int):
     return "#1a1a1a", "#666"
  
  
+def jy_score_colour(value):
+    """Colour-codes the JY Score cell: >65 green, 35-65 orange, <35 red.
+    Blank/non-numeric (no data fed in yet) stays neutral grey."""
+    try:
+        v = float(str(value).strip())
+    except (TypeError, ValueError):
+        return {"bg": "#1a1428", "fg": "#666"}
+    if v > 65:
+        return {"bg": "#003020", "fg": "#00e676"}
+    if v >= 35:
+        return {"bg": "#3a2a00", "fg": "#ffb74d"}
+    return {"bg": "#3a0000", "fg": "#ff5252"}
+ 
+ 
 def cell_colour(d):
     if d is None: return {"bg": "#111111", "fg": "#333333"}
     if d <= 2:    return {"bg": "#003020", "fg": "#00e676"}
@@ -609,7 +623,14 @@ def build_html_table(df: pd.DataFrame) -> str:
         html.append(f'<td style="padding:5px 8px; color:#888; font-size:11px;">{section}</td>')
         for field in JY_FIELDS:
             val = row.get(field, "") or "—"
-            html.append(f'<td style="padding:5px 6px; background:#1a1428; color:#d8c7f2; font-size:11px; white-space:nowrap;">{val}</td>')
+            if field == "JY Score":
+                c = jy_score_colour(row.get(field, ""))
+                html.append(
+                    f'<td style="padding:5px 6px; background:{c["bg"]}; color:{c["fg"]}; '
+                    f'font-weight:bold; font-size:12px; white-space:nowrap;">{val}</td>'
+                )
+            else:
+                html.append(f'<td style="padding:5px 6px; background:#1a1428; color:#d8c7f2; font-size:11px; white-space:nowrap;">{val}</td>')
         html.append(score_cell(t_score, MAX_TRENDING))
         html.append(score_cell(r_score, MAX_REVERSAL))
         # Total
