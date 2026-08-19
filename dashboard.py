@@ -1391,7 +1391,10 @@ df["_jy_score_num"]    = pd.to_numeric(df["JY Score"], errors="coerce") if "JY S
 df["_atr_20d_num"]     = df["ATR from 20D MA"].apply(parse_leading_float) if "ATR from 20D MA" in df.columns else pd.NA
  
 jy_history      = load_jy_history()
-df["_jy_delta"] = df.apply(lambda r: jy_score_24h_delta(r["Ticker"], r["_jy_score_num"], jy_history), axis=1)
+df["_jy_delta"] = pd.to_numeric(
+    df.apply(lambda r: jy_score_24h_delta(r["Ticker"], r["_jy_score_num"], jy_history), axis=1),
+    errors="coerce",
+)
  
 # Sidebar section/ticker filters (populated after data load)
 all_sections = sorted([s for s in df["Section"].dropna().unique() if s.strip()])
