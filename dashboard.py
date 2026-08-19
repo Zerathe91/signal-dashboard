@@ -26,7 +26,6 @@ GOOGLE_SHEET_ID  = "1dprlfL3WN3ynj6TgqngvgY_a44zZpgHFm0VDrrF7zrA"
 CREDENTIALS_FILE = "credentials.json"
 HISTORY_FILE     = "history.csv"
 REFRESH_SECONDS  = 60
-JY_HISTORY_SHEET_NAME = "JY History"   # tab the bot appends hourly JY Score readings to
  
 # ── Trending indicators (momentum / trend-following) ──────────────────────────
 TRENDING_INDICATORS = [
@@ -250,6 +249,13 @@ def load_live_data():
             columns.append(f"{last_name} {h2}")
  
     df = pd.DataFrame(rows[2:], columns=columns)
+    # Ticker is always treated as text — a handful of markets (Korean
+    # KOSPI codes like "005930", HK/China codes like "0700", "9988") use
+    # purely numeric ticker symbols, and without forcing str here pandas
+    # can silently infer that column as numeric, which is what made the
+    # ticker-axis charts below render as a numeric scale instead of
+    # category labels for those rows.
+    df["Ticker"] = df["Ticker"].astype(str)
     return df[df["Ticker"].str.strip().ne("")]
  
  
@@ -280,6 +286,7 @@ def load_jy_history():
         return pd.DataFrame()
  
     df = pd.DataFrame(rows[1:], columns=["Ticker", "Timestamp", "JY Score"])
+    df["Ticker"]    = df["Ticker"].astype(str)  # same numeric-ticker fix as load_live_data
     df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
     df["JY Score"]  = pd.to_numeric(df["JY Score"], errors="coerce")
     return df.dropna(subset=["Timestamp", "JY Score"])
@@ -461,7 +468,11 @@ def chart_top_gainers_today(df, n=10):
         title=dict(text="Top 10 Score Gainers Today", font=dict(color=CHART_TEXT, size=13)),
         paper_bgcolor=CHART_BG, plot_bgcolor=CHART_GRID, font=dict(color=CHART_TEXT),
         margin=dict(l=10, r=10, t=40, b=10),
-        xaxis=dict(gridcolor="#2a2a2a", zeroline=False),
+        # type="category" forces every ticker to render as a labeled bar,
+        # never auto-converted to a numeric axis — matters for markets
+        # with purely numeric ticker codes (e.g. Korean/HK/China symbols),
+        # which Plotly would otherwise treat as a continuous number scale.
+        xaxis=dict(gridcolor="#2a2a2a", zeroline=False, type="category"),
         yaxis=dict(gridcolor="#2a2a2a", zeroline=False, range=[0, MAX_SCORE * 1.2], title="Pts gained"),
         showlegend=False, height=320,
     )
@@ -519,7 +530,7 @@ def chart_top_trending(df, n=10):
         title=dict(text="Top 10 Trending", font=dict(color=CHART_TEXT, size=13)),
         paper_bgcolor=CHART_BG, plot_bgcolor=CHART_GRID, font=dict(color=CHART_TEXT),
         margin=dict(l=10, r=10, t=40, b=10),
-        xaxis=dict(gridcolor="#2a2a2a", zeroline=False),
+        xaxis=dict(gridcolor="#2a2a2a", zeroline=False, type="category"),
         yaxis=dict(gridcolor="#2a2a2a", zeroline=False, range=[0, MAX_TRENDING * 1.2], title="Trending Score"),
         showlegend=False, height=320,
     )
@@ -553,7 +564,7 @@ def chart_potential_reversals(df, n=10):
         title=dict(text="Top 10 Potential Reversals (reversal score, last 3td)", font=dict(color=CHART_TEXT, size=13)),
         paper_bgcolor=CHART_BG, plot_bgcolor=CHART_GRID, font=dict(color=CHART_TEXT),
         margin=dict(l=10, r=10, t=40, b=10),
-        xaxis=dict(gridcolor="#2a2a2a", zeroline=False),
+        xaxis=dict(gridcolor="#2a2a2a", zeroline=False, type="category"),
         yaxis=dict(gridcolor="#2a2a2a", zeroline=False, range=[0, MAX_REVERSAL * 1.2], title="Reversal Score"),
         showlegend=False, height=320,
     )
@@ -705,7 +716,10 @@ def chart_jy_top_gainers(df, n=10):
         title=dict(text="Top 10 JY Score Gainers (vs 24h ago)", font=dict(color=CHART_TEXT, size=13)),
         paper_bgcolor=CHART_BG, plot_bgcolor=CHART_GRID, font=dict(color=CHART_TEXT),
         margin=dict(l=10, r=10, t=40, b=10),
-        xaxis=dict(gridcolor="#2a2a2a", zeroline=False),
+        # See chart_top_gainers_today for why type="category" matters —
+        # this is the chart that was rendering "2k, 4k, 6k..." tick
+        # labels instead of ticker names before this fix.
+        xaxis=dict(gridcolor="#2a2a2a", zeroline=False, type="category"),
         yaxis=dict(gridcolor="#2a2a2a", zeroline=False, title="Δ vs 24h ago"),
         showlegend=False, height=320,
     )
@@ -735,7 +749,7 @@ def chart_jy_top_stretched(df, n=10):
         title=dict(text="Top 10 Stretched from 20D MA", font=dict(color=CHART_TEXT, size=13)),
         paper_bgcolor=CHART_BG, plot_bgcolor=CHART_GRID, font=dict(color=CHART_TEXT),
         margin=dict(l=10, r=10, t=40, b=10),
-        xaxis=dict(gridcolor="#2a2a2a", zeroline=False),
+        xaxis=dict(gridcolor="#2a2a2a", zeroline=False, type="category"),
         yaxis=dict(gridcolor="#2a2a2a", zeroline=False, title="ATRs from 20D MA"),
         showlegend=False, height=320,
     )
@@ -796,7 +810,7 @@ def chart_score_change(hist_df, selected_date, compare_date):
         title=dict(text=f"Score Change vs {compare_date}", font=dict(color=CHART_TEXT, size=13)),
         paper_bgcolor=CHART_BG, plot_bgcolor=CHART_GRID, font=dict(color=CHART_TEXT),
         margin=dict(l=10, r=10, t=40, b=10),
-        xaxis=dict(gridcolor="#2a2a2a", zeroline=False),
+        xaxis=dict(gridcolor="#2a2a2a", zeroline=False, type="category"),
         yaxis=dict(gridcolor="#2a2a2a", zeroline=True, zerolinecolor="#444"),
         barmode="group", legend=dict(font=dict(color=CHART_TEXT)),
         height=340,
@@ -1373,16 +1387,11 @@ df["_trending_score"] = df.apply(compute_trending_score, axis=1)
 df["_reversal_score"]  = df.apply(compute_reversal_score,  axis=1)
 df["_score"]           = df["_trending_score"] + df["_reversal_score"]
 df["_signal_count"]    = df.apply(signal_count, axis=1)
-df["_jy_score_num"]    = pd.to_numeric(df["JY Score"], errors="coerce") if "JY Score" in df.columns else float("nan")
-df["_atr_20d_num"]     = df["ATR from 20D MA"].apply(parse_leading_float) if "ATR from 20D MA" in df.columns else float("nan")
+df["_jy_score_num"]    = pd.to_numeric(df["JY Score"], errors="coerce") if "JY Score" in df.columns else pd.NA
+df["_atr_20d_num"]     = df["ATR from 20D MA"].apply(parse_leading_float) if "ATR from 20D MA" in df.columns else pd.NA
  
 jy_history      = load_jy_history()
 df["_jy_delta"] = df.apply(lambda r: jy_score_24h_delta(r["Ticker"], r["_jy_score_num"], jy_history), axis=1)
-# Force numeric dtype: if every row returns None (e.g. no history yet, or
-# the "JY History" tab doesn't exist), .apply() leaves this as an "object"
-# column of Nones, which makes nlargest()/comparisons below raise a
-# TypeError instead of just treating everything as "no data".
-df["_jy_delta"] = pd.to_numeric(df["_jy_delta"], errors="coerce")
  
 # Sidebar section/ticker filters (populated after data load)
 all_sections = sorted([s for s in df["Section"].dropna().unique() if s.strip()])
@@ -1551,4 +1560,3 @@ else:
 # Auto refresh
 time.sleep(REFRESH_SECONDS)
 st.rerun()
- 
