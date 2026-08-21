@@ -26,6 +26,13 @@ GOOGLE_SHEET_ID  = "1dprlfL3WN3ynj6TgqngvgY_a44zZpgHFm0VDrrF7zrA"
 CREDENTIALS_FILE = "credentials.json"
 HISTORY_FILE     = "history.csv"
 REFRESH_SECONDS  = 60
+
+# Must match the same constant in google_sheet_bot.py — this was
+# previously missing from this file entirely, which meant every call to
+# load_jy_history() below threw a NameError that got silently swallowed
+# by its try/except, making 24h-delta data look permanently unavailable
+# regardless of how much history had actually accumulated in the sheet.
+JY_HISTORY_SHEET_NAME = "JY History"
  
 # ── Trending indicators (momentum / trend-following) ──────────────────────────
 TRENDING_INDICATORS = [
@@ -36,7 +43,7 @@ TRENDING_INDICATORS = [
     "Scoreboard",
     "KovaScore",
 ]
- 
+
 TRENDING_RULES = {
     "Bullish Swing":  [(2, 6), (5, 4), (10, 2), (20, 1)],
     "Bottom Hourly":  [(2, 6), (5, 4), (10, 2), (20, 1)],
@@ -45,14 +52,14 @@ TRENDING_RULES = {
     "Scoreboard":     [(2, 3), (5, 2), (10, 1)],
     "KovaScore":      [(2, 3), (5, 2), (10, 1)],
 }
- 
+
 MAX_TRENDING = sum(r[0][1] for r in TRENDING_RULES.values() if r)
- 
+
 # ── Observation indicators (no score, shown for reference) ───────────────────
 OBSERVATION_INDICATORS = [
     "Volume Spike",
 ]
- 
+
 # ── Reversal indicators (mean reversion / bottom-finding) ─────────────────────
 REVERSAL_INDICATORS = [
     "Hourly Bullish Divergence",
@@ -61,7 +68,7 @@ REVERSAL_INDICATORS = [
     "Bottom Daily",
     "Mean Reversion",
 ]
- 
+
 REVERSAL_RULES = {
     "Hourly Bullish Divergence": [(2, 3), (5, 2), (10, 1)],
     "Golden Pocket":             [(2, 3), (5, 2), (10, 1)],
@@ -69,14 +76,14 @@ REVERSAL_RULES = {
     "Bottom Daily":              [(2, 6), (5, 4), (10, 2), (20, 1)],
     "Mean Reversion":            [(2, 3), (5, 2), (10, 1)],
 }
- 
+
 MAX_REVERSAL = sum(r[0][1] for r in REVERSAL_RULES.values() if r)
- 
+
 # ── Combined (all indicators in display order) ────────────────────────────────
 INDICATORS = TRENDING_INDICATORS + OBSERVATION_INDICATORS + REVERSAL_INDICATORS
 SCORE_RULES = {**TRENDING_RULES, **{"Volume Spike": []}, **REVERSAL_RULES}
 MAX_SCORE   = MAX_TRENDING + MAX_REVERSAL
- 
+
 # ── Hourly JY Score fields (from the Discord "Hourly JY Score" cards) ─────────
 # These are plain columns straight from the sheet — no date-based scoring,
 # just shown as-is right after Section.
@@ -88,13 +95,13 @@ JY_FIELDS = [
     "Stretch Status",
     "Vol Pace vs Avg",
 ]
- 
+
 CHART_BG   = "#0e1117"
 CHART_GRID = "#1e222d"
 CHART_TEXT = "#aaaaaa"
- 
+
 # ─── PAGE SETUP ───────────────────────────────────────────────────────────────
- 
+
 st.set_page_config(page_title="Signal Dashboard", page_icon="📈", layout="wide")
 st.markdown("""
 <style>
@@ -104,9 +111,9 @@ st.markdown("""
     td:first-child, td:nth-child(2) { text-align: left !important; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
- 
+
 # ─── HELPERS ──────────────────────────────────────────────────────────────────
- 
+
 def days_ago(date_str: str):
     if not date_str or not date_str.strip():
         return None
@@ -120,8 +127,8 @@ def days_ago(date_str: str):
         except ValueError:
             continue
     return None
- 
- 
+
+
 def _score_from_rules(row, rules: dict) -> int:
     total = 0
     for ind, rule_list in rules.items():
@@ -133,18 +140,18 @@ def _score_from_rules(row, rules: dict) -> int:
                 total += pts
                 break
     return total
- 
- 
+
+
 def compute_trending_score(row) -> int:
     return _score_from_rules(row, TRENDING_RULES)
- 
+
 def compute_reversal_score(row) -> int:
     return _score_from_rules(row, REVERSAL_RULES)
- 
+
 def compute_score(row) -> int:
     return compute_trending_score(row) + compute_reversal_score(row)
- 
- 
+
+
 def score_gained_today_total(row) -> int:
     total = 0
     for ind, rules in SCORE_RULES.items():
@@ -155,8 +162,8 @@ def score_gained_today_total(row) -> int:
                     total += pts
                     break
     return total
- 
- 
+
+
 def score_from_recent(row, rules: dict, window=3) -> int:
     total = 0
     for ind, rule_list in rules.items():
@@ -167,24 +174,24 @@ def score_from_recent(row, rules: dict, window=3) -> int:
                     total += pts
                     break
     return total
- 
- 
+
+
 def signal_count(row, days_limit=None) -> int:
     return sum(
         1 for ind in INDICATORS
         if (d := days_ago(row.get(f"{ind} Date", ""))) is not None
         and (days_limit is None or d <= days_limit)
     )
- 
- 
+
+
 def score_badge_colour(score: int, max_val: int):
     ratio = score / max_val if max_val else 0
     if ratio >= 0.75: return "#003020", "#00e676"
     if ratio >= 0.4:  return "#1a3a1a", "#4caf50"
     if ratio >= 0.15: return "#1e2a00", "#8bc34a"
     return "#1a1a1a", "#666"
- 
- 
+
+
 def parse_leading_float(value):
     """Pulls the leading signed number out of a text field like
     '-0.7 ATRs' or '1.2x' -> -0.7 / 1.2. Returns None if nothing numeric
@@ -193,8 +200,8 @@ def parse_leading_float(value):
         return None
     m = re.search(r'-?\d+\.?\d*', str(value))
     return float(m.group()) if m else None
- 
- 
+
+
 def jy_score_colour(value):
     """Colour-codes the JY Score cell: >65 green, 35-65 orange, <35 red.
     Blank/non-numeric (no data fed in yet) stays neutral grey."""
@@ -207,17 +214,17 @@ def jy_score_colour(value):
     if v >= 35:
         return {"bg": "#3a2a00", "fg": "#ffb74d"}
     return {"bg": "#3a0000", "fg": "#ff5252"}
- 
- 
+
+
 def cell_colour(d):
     if d is None: return {"bg": "#111111", "fg": "#333333"}
     if d <= 2:    return {"bg": "#003020", "fg": "#00e676"}
     if d <= 5:    return {"bg": "#1a3a1a", "fg": "#4caf50"}
     if d <= 10:   return {"bg": "#1e3a00", "fg": "#8bc34a"}
     return               {"bg": "#1a1a1a", "fg": "#444444"}
- 
+
 # ─── DATA LOADING ─────────────────────────────────────────────────────────────
- 
+
 def _gspread_client():
     # On Streamlit Cloud, credentials are stored as a TOML table in st.secrets
     # Locally, fall back to credentials.json file
@@ -226,8 +233,8 @@ def _gspread_client():
         return gspread.service_account_from_dict(creds_dict)
     except (KeyError, Exception):
         return gspread.service_account(filename=CREDENTIALS_FILE)
- 
- 
+
+
 @st.cache_data(ttl=REFRESH_SECONDS)
 def load_live_data():
     gc    = _gspread_client()
@@ -235,7 +242,7 @@ def load_live_data():
     rows  = sheet.get_all_values()
     if len(rows) < 3:
         return pd.DataFrame()
- 
+
     header1, header2 = rows[0], rows[1]
     columns, last_name = [], ""
     for h1, h2 in zip(header1, header2):
@@ -247,7 +254,7 @@ def load_live_data():
             columns.append(f"{last_name} {h2}")
         else:
             columns.append(f"{last_name} {h2}")
- 
+
     df = pd.DataFrame(rows[2:], columns=columns)
     # Ticker is always treated as text — a handful of markets (Korean
     # KOSPI codes like "005930", HK/China codes like "0700", "9988") use
@@ -257,8 +264,8 @@ def load_live_data():
     # category labels for those rows.
     df["Ticker"] = df["Ticker"].astype(str)
     return df[df["Ticker"].str.strip().ne("")]
- 
- 
+
+
 @st.cache_data(ttl=REFRESH_SECONDS)
 def load_history():
     path = Path(HISTORY_FILE)
@@ -267,8 +274,8 @@ def load_history():
     df = pd.read_csv(path, on_bad_lines="skip")
     df["date"] = pd.to_datetime(df["date"]).dt.date
     return df
- 
- 
+
+
 @st.cache_data(ttl=REFRESH_SECONDS)
 def load_jy_history():
     """Reads the bot's 'JY History' tab (Ticker, Timestamp, JY Score — one
@@ -278,20 +285,24 @@ def load_jy_history():
     try:
         gc = _gspread_client()
         ws = gc.open_by_key(GOOGLE_SHEET_ID).worksheet(JY_HISTORY_SHEET_NAME)
-    except Exception:
+    except gspread.exceptions.WorksheetNotFound:
+        # Genuinely no history yet (e.g. right after this feature was
+        # deployed) — fine to show as empty. Anything else (auth errors,
+        # a NameError from a typo'd constant, etc.) is a real bug and
+        # should surface instead of silently pretending there's no data.
         return pd.DataFrame()
- 
+
     rows = ws.get_all_values()
     if len(rows) < 2:
         return pd.DataFrame()
- 
+
     df = pd.DataFrame(rows[1:], columns=["Ticker", "Timestamp", "JY Score"])
     df["Ticker"]    = df["Ticker"].astype(str)  # same numeric-ticker fix as load_live_data
     df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
     df["JY Score"]  = pd.to_numeric(df["JY Score"], errors="coerce")
     return df.dropna(subset=["Timestamp", "JY Score"])
- 
- 
+
+
 def jy_score_24h_delta(ticker: str, current_value, jy_history: pd.DataFrame, tolerance_hours: float = 4):
     """Change in JY Score vs. the reading closest to 24h ago for this
     ticker, or None if there's no history close enough yet to compare
@@ -301,24 +312,24 @@ def jy_score_24h_delta(ticker: str, current_value, jy_history: pd.DataFrame, tol
     hist = jy_history[jy_history["Ticker"] == ticker]
     if hist.empty:
         return None
- 
+
     target = datetime.now() - timedelta(hours=24)
     diffs  = (hist["Timestamp"] - target).abs()
     within = hist[diffs <= pd.Timedelta(hours=tolerance_hours)]
     if within.empty:
         return None
- 
+
     nearest = within.loc[diffs[within.index].idxmin()]
     return current_value - nearest["JY Score"]
- 
- 
+
+
 def get_available_dates(history: pd.DataFrame):
     if history.empty:
         return []
     return sorted(history["date"].unique().tolist(), reverse=True)
- 
+
 # ─── CHARTS ───────────────────────────────────────────────────────────────────
- 
+
 def chart_sector_treemap(df, mode="overview"):
     """
     mode='overview'  → root node visible, sectors only at top level, click to drill into tickers
@@ -333,7 +344,7 @@ def chart_sector_treemap(df, mode="overview"):
     score_vals = sec_df["_score"].tolist()
     cmin = min(score_vals) if score_vals else 0
     cmax = max(score_vals) if score_vals else MAX_SCORE
- 
+
     if mode == "overview":
         # Three-level: invisible root → sectors → tickers (click to drill)
         labels  = ["root"]
@@ -382,7 +393,7 @@ def chart_sector_treemap(df, mode="overview"):
         title_text = "Sector Heatmap — sectors + tickers"
         maxdepth   = 2
         pad        = 2
- 
+
     fig = go.Figure(go.Treemap(
         labels=labels,
         parents=parents,
@@ -409,8 +420,8 @@ def chart_sector_treemap(df, mode="overview"):
         margin=dict(l=10, r=10, t=50, b=10), height=600,
     )
     return fig
- 
- 
+
+
 def chart_top_sections_stacked(df, n=10):
     """Stacked bar: trending vs reversal avg score per section."""
     grp = (
@@ -445,8 +456,8 @@ def chart_top_sections_stacked(df, n=10):
         height=380,
     )
     return fig
- 
- 
+
+
 def chart_top_gainers_today(df, n=10):
     tmp = df.copy()
     tmp["_gained_today"] = tmp.apply(score_gained_today_total, axis=1)
@@ -477,8 +488,8 @@ def chart_top_gainers_today(df, n=10):
         showlegend=False, height=320,
     )
     return fig
- 
- 
+
+
 def chart_top_section_gainers_today(df, n=10):
     tmp = df.copy()
     tmp["_gained_today"] = tmp.apply(score_gained_today_total, axis=1)
@@ -508,8 +519,8 @@ def chart_top_section_gainers_today(df, n=10):
         showlegend=False, height=320,
     )
     return fig
- 
- 
+
+
 def chart_top_trending(df, n=10):
     top = df.nlargest(n, "_trending_score")
     top = top[top["_trending_score"] > 0]
@@ -535,8 +546,8 @@ def chart_top_trending(df, n=10):
         showlegend=False, height=320,
     )
     return fig
- 
- 
+
+
 def chart_potential_reversals(df, n=10):
     tmp = df.copy()
     tmp["_recent_reversal"] = tmp.apply(
@@ -569,12 +580,12 @@ def chart_potential_reversals(df, n=10):
         showlegend=False, height=320,
     )
     return fig
- 
+
 # ── JY Score charts (mirrors the point-system charts above, same layout) ──────
- 
+
 JY_COLORSCALE = [[0.0, "#8b0000"], [0.35, "#cc3300"], [0.5, "#8a6d00"], [0.7, "#1e5a1e"], [1.0, "#00c853"]]
- 
- 
+
+
 def chart_jy_sector_treemap(df, mode="overview"):
     """Same heatmap as chart_sector_treemap, coloured by JY Score instead
     of the point-system total. Fixed 0-100 colour range (not min/max of the
@@ -588,7 +599,7 @@ def chart_jy_sector_treemap(df, mode="overview"):
         .agg(avg_score=("_jy_score_num", "mean"), count=("Ticker", "count"))
         .reset_index()
     )
- 
+
     if mode == "overview":
         labels, parents, values, colors, hovers = ["root"], [""], [0], [0], [""]
         for _, sr in sec_grp.iterrows():
@@ -613,7 +624,7 @@ def chart_jy_sector_treemap(df, mode="overview"):
             hovers.append(f"<b>{row['Ticker']}</b><br>JY Score: {int(row['_jy_score_num'])}<br>{row['Section']}")
         title_text = "JY Score Heatmap — sectors + tickers"
         maxdepth, pad = 2, 2
- 
+
     fig = go.Figure(go.Treemap(
         labels=labels, parents=parents, values=values, customdata=hovers,
         marker=dict(
@@ -634,8 +645,8 @@ def chart_jy_sector_treemap(df, mode="overview"):
         margin=dict(l=10, r=10, t=50, b=10), height=600,
     )
     return fig
- 
- 
+
+
 def chart_jy_top_sections(df, n=10):
     """Top n sections by average JY Score."""
     grp = (
@@ -664,8 +675,8 @@ def chart_jy_top_sections(df, n=10):
         showlegend=False, height=380,
     )
     return fig
- 
- 
+
+
 def chart_jy_top_section_gainers(df, n=10):
     """Top n sections by average JY Score change vs ~24h ago."""
     grp = (
@@ -694,8 +705,8 @@ def chart_jy_top_section_gainers(df, n=10):
         showlegend=False, height=380,
     )
     return fig
- 
- 
+
+
 def chart_jy_top_gainers(df, n=10):
     """Top n tickers by JY Score change vs ~24h ago."""
     top = df[df["_jy_delta"].notna() & (df["_jy_delta"] > 0)].nlargest(n, "_jy_delta")
@@ -724,8 +735,8 @@ def chart_jy_top_gainers(df, n=10):
         showlegend=False, height=320,
     )
     return fig
- 
- 
+
+
 def chart_jy_top_stretched(df, n=10):
     """Top n tickers by 'ATR from 20D MA' — highest positive value first
     (most stretched above the 20D moving average)."""
@@ -754,8 +765,8 @@ def chart_jy_top_stretched(df, n=10):
         showlegend=False, height=320,
     )
     return fig
- 
- 
+
+
 def chart_historical_section_avg(hist_df, sections=None):
     grp = (
         hist_df[hist_df["section"].str.strip().ne("")]
@@ -781,18 +792,18 @@ def chart_historical_section_avg(hist_df, sections=None):
         height=380,
     )
     return fig
- 
- 
+
+
 def chart_score_change(hist_df, selected_date, compare_date):
     day_a  = hist_df[hist_df["date"] == compare_date][["ticker", "section", "score"]].rename(columns={"score": "score_prev"})
     day_b  = hist_df[hist_df["date"] == selected_date][["ticker", "score"]].rename(columns={"score": "score_now"})
     merged = day_a.merge(day_b, on="ticker")
     merged["change"] = merged["score_now"] - merged["score_prev"]
     merged = merged[merged["change"] != 0].sort_values("change", ascending=False)
- 
+
     top_gainers = merged.head(10)
     top_losers  = merged.tail(10).sort_values("change")
- 
+
     fig = go.Figure()
     fig.add_trace(go.Bar(
         name="Gainers", x=top_gainers["ticker"], y=top_gainers["change"],
@@ -816,9 +827,9 @@ def chart_score_change(hist_df, selected_date, compare_date):
         height=340,
     )
     return fig
- 
+
 # ─── TABLE ────────────────────────────────────────────────────────────────────
- 
+
 def score_cell(score, max_val, label=""):
     bg, fg = score_badge_colour(score, max_val)
     return (
@@ -828,15 +839,15 @@ def score_cell(score, max_val, label=""):
         f'{"<br>" if label else ""}'
         f'<span style="font-size:9px;color:#666;">{label}</span></td>'
     )
- 
- 
+
+
 def group_header(label, colspan, colour):
     return f'<th colspan="{colspan}" style="padding:4px; background:{colour}; color:#ccc; font-size:11px; letter-spacing:1px;">{label}</th>'
- 
- 
+
+
 def build_html_table(df: pd.DataFrame) -> str:
     html = ['<table style="width:100%; border-collapse:collapse;">']
- 
+
     # Row 1: group headers
     html.append('<thead>')
     html.append('<tr>')
@@ -851,7 +862,7 @@ def build_html_table(df: pd.DataFrame) -> str:
     html.append(group_header("OBS", len(OBSERVATION_INDICATORS) * 2, "#1a1a2a"))
     html.append(group_header("— REVERSAL —", len(REVERSAL_INDICATORS) * 2, "#0d3020"))
     html.append('</tr>')
- 
+
     # Row 2: indicator names
     html.append('<tr style="background:#1e222d; color:#aaa;">')
     for ind in INDICATORS:
@@ -861,17 +872,17 @@ def build_html_table(df: pd.DataFrame) -> str:
         )
     html.append('</tr>')
     html.append('</thead><tbody>')
- 
+
     for _, row in df.iterrows():
         ticker  = row.get("Ticker", "")
         section = row.get("Section", "")
         if not ticker:
             continue
- 
+
         t_score = int(row.get("_trending_score", 0))
         r_score = int(row.get("_reversal_score",  0))
         total   = t_score + r_score
- 
+
         html.append('<tr style="border-bottom:1px solid #1a1a1a;">')
         html.append(f'<td style="padding:5px 10px; color:#e0e0e0;">{ticker}</td>')
         html.append(f'<td style="padding:5px 8px; color:#888; font-size:11px;">{section}</td>')
@@ -902,7 +913,7 @@ def build_html_table(df: pd.DataFrame) -> str:
             f'font-weight:bold; font-size:13px;">'
             f'{total}<span style="color:#555;font-size:9px;">/{MAX_SCORE}</span></td>'
         )
- 
+
         for ind in INDICATORS:
             date_val  = row.get(f"{ind} Date",  "")
             price_val = row.get(f"{ind} Price", "")
@@ -913,21 +924,21 @@ def build_html_table(df: pd.DataFrame) -> str:
             # so the time comes through, don't truncate to just the date.
             short_date = date_val.strip() if date_val and date_val.strip() else "—"
             price_disp = f"${price_val}" if price_val else "—"
- 
+
             # Observation column gets slightly different bg tint
             if ind in OBSERVATION_INDICATORS:
                 c["bg"] = c["bg"] if d is not None else "#0d0d1a"
- 
+
             html.append(
                 f'<td colspan="2" style="padding:4px; background:{c["bg"]}; color:{c["fg"]}; font-size:11px;">'
                 f'{short_date}<br><span style="font-size:10px;">{price_disp}</span></td>'
             )
         html.append('</tr>')
- 
+
     html.append('</tbody></table>')
     return "".join(html)
- 
- 
+
+
 def build_historical_table(hist_day: pd.DataFrame, compare_day: pd.DataFrame = None) -> str:
     if compare_day is not None and not compare_day.empty:
         merged = hist_day.merge(
@@ -938,9 +949,9 @@ def build_historical_table(hist_day: pd.DataFrame, compare_day: pd.DataFrame = N
     else:
         merged = hist_day.copy()
         merged["change"] = None
- 
+
     merged = merged.sort_values("score", ascending=False)
- 
+
     html = ['<table style="width:100%; border-collapse:collapse;">']
     html.append('<thead><tr style="background:#1e222d; color:#aaa;">')
     html.append('<th style="padding:6px 10px; text-align:left;">Ticker</th>')
@@ -952,13 +963,13 @@ def build_historical_table(hist_day: pd.DataFrame, compare_day: pd.DataFrame = N
         if SCORE_RULES[ind]:
             html.append(f'<th style="padding:6px 4px;">{ind}</th>')
     html.append('</tr></thead><tbody>')
- 
+
     for _, row in merged.iterrows():
         ticker  = row.get("ticker", "")
         section = row.get("section", "")
         score   = int(row.get("score", 0))
         sbg, sfg = score_badge_colour(score, MAX_SCORE)
- 
+
         html.append('<tr style="border-bottom:1px solid #1a1a1a;">')
         html.append(f'<td style="padding:5px 10px; color:#e0e0e0;">{ticker}</td>')
         html.append(f'<td style="padding:5px 10px; color:#888; font-size:11px;">{section}</td>')
@@ -977,30 +988,30 @@ def build_historical_table(hist_day: pd.DataFrame, compare_day: pd.DataFrame = N
             else:
                 chg_str, chg_col = "0", "#555"
             html.append(f'<td style="padding:5px; color:{chg_col}; font-weight:bold;">{chg_str}</td>')
- 
+
         for ind in SCORE_RULES:
             if not SCORE_RULES[ind]:
                 continue
             pts = int(row.get(ind, 0))
             bg, fg = ("#1a3a1a", "#4caf50") if pts > 0 else ("#111", "#333")
             html.append(f'<td style="padding:4px; background:{bg}; color:{fg}; font-size:12px;">{pts if pts else "—"}</td>')
- 
+
         html.append('</tr>')
- 
+
     html.append('</tbody></table>')
     return "".join(html)
- 
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
- 
+
 history = load_history()
 available_dates = get_available_dates(history)
- 
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("⚙️ Controls")
- 
+
     view_mode = st.radio("View", ["📡 Live", "📅 Historical", "🔔 Change Log", "📖 Definitions"], horizontal=False)
- 
+
     treemap_mode_label = st.radio(
         "Heatmap style",
         ["Overview (sectors only)", "Detailed (sectors + tickers)"],
@@ -1008,7 +1019,7 @@ with st.sidebar:
     )
     treemap_mode = "overview" if treemap_mode_label.startswith("Overview") else "detailed"
     st.markdown("---")
- 
+
     if view_mode == "📅 Historical":
         if not available_dates:
             st.warning("No snapshots yet. Run snapshot.py first.")
@@ -1024,20 +1035,20 @@ with st.sidebar:
                 [None] + compare_options,
                 format_func=lambda d: "None" if d is None else d.strftime("%d %b %Y"),
             ) if compare_options else None
- 
+
         section_filter = []; freshness_days = None; min_score = 0
         min_trending = 0; min_reversal = 0; min_signals = 1
         must_have = []; ticker_filter = []; sort_by = "Score (high→low)"
- 
+
     elif view_mode in ("🔔 Change Log", "📖 Definitions"):
         selected_date = compare_date = None
         section_filter = []; freshness_days = None; min_score = 0
         min_trending = 0; min_reversal = 0; min_signals = 1
         must_have = []; ticker_filter = []; sort_by = "Total score (high→low)"
- 
+
     else:
         selected_date = compare_date = None
- 
+
         freshness_label = st.selectbox(
             "Show signals triggered within",
             ["All time", "Today only", "Last 1 trading day", "Last 3 trading days",
@@ -1047,14 +1058,14 @@ with st.sidebar:
             "All time": None, "Today only": 0, "Last 1 trading day": 1,
             "Last 3 trading days": 3, "Last 5 trading days": 5, "Last 90 days": 90,
         }[freshness_label]
- 
+
         st.markdown("---")
         st.markdown("**Score filters**")
         min_trending = st.slider(f"Min Trending score (max {MAX_TRENDING})", 0, MAX_TRENDING, 0)
         min_reversal = st.slider(f"Min Reversal score (max {MAX_REVERSAL})", 0, MAX_REVERSAL, 0)
         min_score    = st.slider(f"Min Total score (max {MAX_SCORE})",    0, MAX_SCORE,    0)
         min_signals  = st.slider("Min signals", 1, len(INDICATORS), 1)
- 
+
         st.markdown("---")
         must_have     = st.multiselect("Must have signal in", INDICATORS, placeholder="Any")
         section_filter = []
@@ -1063,47 +1074,47 @@ with st.sidebar:
             "Total score (high→low)", "JY Score (high→low)", "Trending score (high→low)",
             "Reversal score (high→low)", "Signals (high→low)", "Ticker (A→Z)"
         ])
- 
+
     st.markdown("---")
     st.markdown(f"🔄 Auto-refreshes every **{REFRESH_SECONDS}s**")
     if st.button("🔄 Refresh now"):
         st.cache_data.clear()
         st.rerun()
- 
+
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("📈 Signal Dashboard")
 last_close = np.busday_offset(datetime.now().date(), 0, roll="backward")
 last_close_str = last_close.astype("datetime64[D]").astype(object).strftime("%A %d %b %Y")
 st.caption(f"Last loaded: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  |  Last trading day: **{last_close_str}**")
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # HISTORICAL VIEW
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 if view_mode == "📅 Historical":
     if history.empty or selected_date is None:
         st.warning("No snapshot data available. Run `python snapshot.py` first.")
         st.stop()
- 
+
     hist_day    = history[history["date"] == selected_date].copy()
     compare_day = history[history["date"] == compare_date].copy() if compare_date else pd.DataFrame()
- 
+
     st.subheader(f"📅 Snapshot — {selected_date.strftime('%A, %d %b %Y')}")
- 
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Tickers", len(hist_day))
     c2.metric("Avg score", f"{hist_day['score'].mean():.1f}")
     c3.metric("Top ticker", hist_day.loc[hist_day["score"].idxmax(), "ticker"] if not hist_day.empty else "—")
     c4.metric("Top score",  int(hist_day["score"].max()) if not hist_day.empty else 0)
- 
+
     st.markdown("---")
     if len(available_dates) > 1:
         st.markdown("**Section Avg Score Over Time**")
- 
+
         # Section selector with Select All / Clear All
         all_hist_sections = sorted(history["section"].dropna().unique().tolist())
         all_hist_sections = [s for s in all_hist_sections if s.strip()]
- 
+
         b1, b2, _ = st.columns([1, 1, 6])
         if b1.button("✅ Select All", key="hist_sel_all"):
             st.session_state["hist_selected_sections"] = all_hist_sections
@@ -1113,11 +1124,11 @@ if view_mode == "📅 Historical":
             st.session_state["hist_selected_sections"] = []
             for _s in all_hist_sections:
                 st.session_state[f"hist_cb_{_s}"] = False
- 
+
         # Checkboxes — 4 per row
         if "hist_selected_sections" not in st.session_state:
             st.session_state["hist_selected_sections"] = all_hist_sections
- 
+
         checked = list(st.session_state["hist_selected_sections"])
         rows = [all_hist_sections[i:i+4] for i in range(0, len(all_hist_sections), 4)]
         for row_secs in rows:
@@ -1128,9 +1139,9 @@ if view_mode == "📅 Historical":
                     checked.append(sec)
                 elif not val and sec in checked:
                     checked.remove(sec)
- 
+
         st.session_state["hist_selected_sections"] = checked
- 
+
         col_l, col_r = st.columns([2, 1])
         with col_l:
             if checked:
@@ -1147,34 +1158,34 @@ if view_mode == "📅 Historical":
                 st.info("Select a comparison date to see score changes.")
     else:
         st.info("Collect more snapshots over time to see trend charts.")
- 
+
     st.markdown("---")
     st.subheader("📋 Scores on this date")
     st.markdown(build_historical_table(hist_day, compare_day if not compare_day.empty else None), unsafe_allow_html=True)
     st.stop()
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CHANGE LOG VIEW
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 if view_mode == "🔔 Change Log":
     st.title("🔔 Change Log")
     st.caption(f"Showing recent signals as of {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     st.markdown("---")
- 
+
     with st.spinner("Loading data..."):
         df_cl = load_live_data()
- 
+
     if df_cl.empty:
         st.error("No data found.")
         st.stop()
- 
+
     df_cl["_trending_score"] = df_cl.apply(compute_trending_score, axis=1)
     df_cl["_reversal_score"]  = df_cl.apply(compute_reversal_score,  axis=1)
     df_cl["_score"]           = df_cl["_trending_score"] + df_cl["_reversal_score"]
- 
+
     WATCH_INDICATORS = ["Bullish Swing", "Bottom Hourly", "Bottom Daily", "Major Bottom"]
- 
+
     for ind in WATCH_INDICATORS:
         st.subheader(f"📌 {ind}")
         date_col = f"{ind} Date"
@@ -1182,12 +1193,12 @@ if view_mode == "🔔 Change Log":
         if date_col not in df_cl.columns:
             st.info("No data for this indicator.")
             continue
- 
+
         recent = df_cl.copy()
         recent["_days"] = recent[date_col].apply(days_ago)
         recent = recent[recent["_days"].notna() & (recent["_days"] <= 5)].copy()
         recent = recent.sort_values("_days")
- 
+
         if recent.empty:
             st.info(f"No signals in the last 5 trading days.")
         else:
@@ -1203,7 +1214,7 @@ if view_mode == "🔔 Change Log":
                 })
             st.dataframe(pd.DataFrame(rows).set_index("Ticker"), use_container_width=True)
         st.markdown("---")
- 
+
     st.subheader("🏆 Tickers that crossed above 15 points today")
     df_cl["_gained_today"] = df_cl.apply(score_gained_today_total, axis=1)
     high_scorers = df_cl[
@@ -1216,18 +1227,18 @@ if view_mode == "🔔 Change Log":
             "_gained_today": "Gained Today", "_trending_score": "Trend", "_reversal_score": "Reversal", "_score": "Total"
         }).set_index("Ticker")
         st.dataframe(display, use_container_width=True)
- 
+
     st.stop()
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DEFINITIONS VIEW
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 if view_mode == "📖 Definitions":
     st.title("📖 Indicator Definitions")
     st.caption("What each signal means, what timeframe it runs on, and how it scores.")
     st.markdown("---")
- 
+
     DEFS = [
         {
             "name": "🔵 Bullish Swing",
@@ -1353,7 +1364,7 @@ if view_mode == "📖 Definitions":
             ),
         },
     ]
- 
+
     for d in DEFS:
         cat_color = {"Trending": "#0d2a45", "Observation": "#1a1a2a", "Reversal": "#0d3020"}.get(d["category"], "#1a1a1a")
         cat_text  = {"Trending": "#90caf9", "Observation": "#888888", "Reversal": "#80cbc4"}.get(d["category"], "#aaa")
@@ -1369,33 +1380,33 @@ if view_mode == "📖 Definitions":
             f'</div>',
             unsafe_allow_html=True,
         )
- 
+
     st.stop()
- 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # LIVE VIEW
 # ══════════════════════════════════════════════════════════════════════════════
- 
+
 with st.spinner("Loading live data..."):
     df = load_live_data()
- 
+
 if df.empty:
     st.error("No data found. Check your Sheet ID and credentials.json.")
     st.stop()
- 
+
 df["_trending_score"] = df.apply(compute_trending_score, axis=1)
 df["_reversal_score"]  = df.apply(compute_reversal_score,  axis=1)
 df["_score"]           = df["_trending_score"] + df["_reversal_score"]
 df["_signal_count"]    = df.apply(signal_count, axis=1)
 df["_jy_score_num"]    = pd.to_numeric(df["JY Score"], errors="coerce") if "JY Score" in df.columns else pd.NA
 df["_atr_20d_num"]     = df["ATR from 20D MA"].apply(parse_leading_float) if "ATR from 20D MA" in df.columns else pd.NA
- 
+
 jy_history      = load_jy_history()
 df["_jy_delta"] = pd.to_numeric(
     df.apply(lambda r: jy_score_24h_delta(r["Ticker"], r["_jy_score_num"], jy_history), axis=1),
     errors="coerce",
 )
- 
+
 # Sidebar section/ticker filters (populated after data load)
 all_sections = sorted([s for s in df["Section"].dropna().unique() if s.strip()])
 all_tickers  = sorted(df["Ticker"].dropna().unique().tolist())
@@ -1403,7 +1414,7 @@ with st.sidebar:
     if view_mode == "📡 Live":
         section_filter = st.multiselect("Section", all_sections, placeholder="All sections", key="sec_live")
         ticker_filter  = st.multiselect("Show specific tickers", all_tickers, placeholder="All tickers", key="tick_live")
- 
+
 # Apply filters
 filtered = df.copy()
 if freshness_days is not None:
@@ -1425,7 +1436,7 @@ for ind in must_have:
 if ticker_filter:
     pinned   = df[df["Ticker"].isin(ticker_filter)]
     filtered = pd.concat([filtered, pinned]).drop_duplicates(subset="Ticker")
- 
+
 if sort_by == "Total score (high→low)":
     filtered = filtered.sort_values("_score", ascending=False)
 elif sort_by == "JY Score (high→low)":
@@ -1438,7 +1449,7 @@ elif sort_by == "Signals (high→low)":
     filtered = filtered.sort_values("_signal_count", ascending=False)
 else:
     filtered = filtered.sort_values("Ticker")
- 
+
 # Metrics
 top_row = filtered.iloc[0] if not filtered.empty else None
 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -1448,12 +1459,12 @@ c3.metric("Max Trend",    MAX_TRENDING)
 c4.metric("Max Reversal", MAX_REVERSAL)
 c5.metric("Top ticker",   top_row["Ticker"] if top_row is not None else "—")
 c6.metric("Top score",    int(top_row["_score"]) if top_row is not None else 0)
- 
+
 # Charts row 1 — full-width treemap
 st.markdown("---")
 st.subheader("📊 Overview")
 st.plotly_chart(chart_sector_treemap(df, mode=treemap_mode), use_container_width=True)
- 
+
 # Charts row 2 — section-level
 col_r2a, col_r2b = st.columns(2)
 with col_r2a:
@@ -1464,7 +1475,7 @@ with col_r2b:
         st.plotly_chart(fig_sec_gainers, use_container_width=True)
     else:
         st.info("No section gains today yet.")
- 
+
 # Charts row 3 — ticker-level
 col_r3a, col_r3b, col_r3c = st.columns(3)
 with col_r3a:
@@ -1485,17 +1496,17 @@ with col_r3c:
         st.plotly_chart(fig_reversals, use_container_width=True)
     else:
         st.info("No potential reversals detected.")
- 
+
 # ── JY Score charts — mirrors the point-system section above ─────────────────
 st.markdown("---")
 st.subheader("🟣 JY Score Overview")
- 
+
 fig_jy_treemap = chart_jy_sector_treemap(df, mode=treemap_mode)
 if fig_jy_treemap:
     st.plotly_chart(fig_jy_treemap, use_container_width=True)
 else:
     st.info("No JY Score data yet.")
- 
+
 col_jy1, col_jy2 = st.columns(2)
 with col_jy1:
     fig_jy_sections = chart_jy_top_sections(df)
@@ -1509,7 +1520,7 @@ with col_jy2:
         st.plotly_chart(fig_jy_sec_gainers, use_container_width=True)
     else:
         st.info("No JY Score section gains yet (needs ~24h of history).")
- 
+
 col_jy3, col_jy4 = st.columns(2)
 with col_jy3:
     fig_jy_gainers = chart_jy_top_gainers(df)
@@ -1523,7 +1534,7 @@ with col_jy4:
         st.plotly_chart(fig_jy_stretched, use_container_width=True)
     else:
         st.info("No stretched-from-20D-MA data yet.")
- 
+
 # Legend + Table
 st.markdown("---")
 st.subheader("📋 Signal Table")
@@ -1543,7 +1554,7 @@ with col_leg3:
         '<span style="background:#0d3020;color:#80cbc4;padding:3px 10px;border-radius:4px;font-size:12px;">■ Reversal indicators</span>',
         unsafe_allow_html=True,
     )
- 
+
 st.markdown(
     '<br>'
     '<span style="background:#003020;color:#00e676;padding:3px 8px;border-radius:4px;font-size:12px;">● ≤ 2td</span>&nbsp;'
@@ -1554,12 +1565,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.markdown("<br>", unsafe_allow_html=True)
- 
+
 if filtered.empty:
     st.warning("No tickers match the current filters.")
 else:
     st.markdown(build_html_table(filtered), unsafe_allow_html=True)
- 
+
 # Auto refresh
 time.sleep(REFRESH_SECONDS)
 st.rerun()
