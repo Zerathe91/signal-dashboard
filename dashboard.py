@@ -223,6 +223,18 @@ def cell_colour(d):
     if d <= 10:   return {"bg": "#1e3a00", "fg": "#8bc34a"}
     return               {"bg": "#1a1a1a", "fg": "#444444"}
 
+
+def colorscale_positions(n: int) -> list:
+    """Evenly-spaced positions (0-1) along a colorscale for n bars.
+    For n<=1, anchors at 0.75 instead of 0.0 — sampling a sequential
+    colorscale (e.g. "Greens") at exactly position 0 returns its
+    lightest/near-white end, which made every single-bar chart (only
+    one ticker/section qualifying that day) render as an invisible
+    white block instead of a visible colored bar."""
+    if n <= 1:
+        return [0.75]
+    return [i / (n - 1) for i in range(n)]
+
 # ─── DATA LOADING ─────────────────────────────────────────────────────────────
 
 def _gspread_client():
@@ -303,18 +315,27 @@ def load_jy_history():
     return df.dropna(subset=["Timestamp", "JY Score"])
 
 
-def jy_score_24h_delta(ticker: str, current_value, jy_history: pd.DataFrame, tolerance_hours: float = 4, max_lookback_hours: float = 96):
-    """Change in JY Score vs. the reading closest to 24h ago for this
-    ticker, or None if there's no history at all yet for this ticker.
+def jy_score_24h_delta(ticker: str, current_value, jy_history: pd.DataFrame, tolerance_hours: float = 4, max_lookback_hours: float = 168):
+    """Change in JY Score vs. the reading closest to 24h before this
+    ticker's OWN most recent data point — not 24h before wall-clock
+    "now". Anchoring to "now" breaks for markets that don't trade on
+    weekends: the most recent data point is Friday's close, and
+    searching for "closest to 24h before now" (e.g. on a Sunday) finds
+    nothing but that same Friday reading, comparing it against itself
+    and always showing 0. Anchoring to the ticker's own latest
+    timestamp instead means "24h before Friday's close" lands on
+    Thursday's close — a real day-over-day comparison. For
+    continuously-updating tickers (crypto/forex) this is equivalent to
+    anchoring on "now", since their latest point always IS ~now.
 
-    Starts with a narrow window around exactly 24h ago (tolerance_hours)
-    and only widens if that comes up empty — which happens for markets
-    that don't trade on weekends (no new hourly bars = no new JY History
-    rows during that gap). Widening naturally falls back to the last
-    trading session's data (e.g. comparing Monday against Friday) instead
-    of showing no comparison at all for the whole weekend. Crypto/forex
-    (24/7) tickers are unaffected, since they always find a match in the
-    first, narrow pass.
+    This same anchoring also handles Mondays and public holidays without
+    any calendar-specific logic: once Monday's first fresh reading
+    arrives, "24h before that" lands in the empty weekend, and widening
+    naturally reaches back to find Friday's close as the nearest
+    available match. max_lookback_hours=168 (a full week) gives enough
+    room for a multi-day holiday cluster (e.g. a Friday holiday, or a
+    market-specific holiday like Lunar New Year for the Korea/HK/China
+    tickers) without reaching back indefinitely.
     """
     if jy_history is None or jy_history.empty or current_value is None or pd.isna(current_value):
         return None
@@ -322,16 +343,19 @@ def jy_score_24h_delta(ticker: str, current_value, jy_history: pd.DataFrame, tol
     if hist.empty:
         return None
 
-    target = datetime.now() - timedelta(hours=24)
+    latest_ts = hist["Timestamp"].max()
+    target = latest_ts - timedelta(hours=24)
     diffs  = (hist["Timestamp"] - target).abs()
 
     window = tolerance_hours
-    while window <= max_lookback_hours:
+    while True:
         within = hist[diffs <= pd.Timedelta(hours=window)]
         if not within.empty:
             nearest = within.loc[diffs[within.index].idxmin()]
             return current_value - nearest["JY Score"]
-        window *= 2
+        if window >= max_lookback_hours:
+            break
+        window = min(window * 2, max_lookback_hours)
 
     return None
 
@@ -495,9 +519,7 @@ def chart_top_gainers_today(df, n=10):
     top = tmp[tmp["_gained_today"] > 0].nlargest(n, "_gained_today")
     if top.empty:
         return None
-    colours = px.colors.sample_colorscale(
-        "Greens", [i / max(len(top) - 1, 1) for i in range(len(top))]
-    )[::-1]
+    colours = px.colors.sample_colorscale("Greens", colorscale_positions(len(top)))[::-1]
     fig = go.Figure(go.Bar(
         x=top["Ticker"], y=top["_gained_today"],
         marker_color=colours,
@@ -532,9 +554,7 @@ def chart_top_section_gainers_today(df, n=10):
     grp = grp[grp > 0]
     if grp.empty:
         return None
-    colours = px.colors.sample_colorscale(
-        "Greens", [i / max(len(grp) - 1, 1) for i in range(len(grp))]
-    )
+    colours = px.colors.sample_colorscale("Greens", colorscale_positions(len(grp)))
     fig = go.Figure(go.Bar(
         x=grp.values, y=grp.index, orientation="h",
         marker_color=colours,
@@ -557,9 +577,7 @@ def chart_top_trending(df, n=10):
     top = top[top["_trending_score"] > 0]
     if top.empty:
         return None
-    colours = px.colors.sample_colorscale(
-        "Blues", [i / max(len(top) - 1, 1) for i in range(len(top))]
-    )[::-1]
+    colours = px.colors.sample_colorscale("Blues", colorscale_positions(len(top)))[::-1]
     fig = go.Figure(go.Bar(
         x=top["Ticker"], y=top["_trending_score"],
         marker_color=colours,
@@ -592,7 +610,7 @@ def chart_potential_reversals(df, n=10):
         return None
     colours = px.colors.sample_colorscale(
         [[0, "#1a3a4a"], [0.5, "#0288d1"], [1, "#00e5ff"]],
-        [i / max(len(tmp) - 1, 1) for i in range(len(tmp))],
+        colorscale_positions(len(tmp)),
     )[::-1]
     fig = go.Figure(go.Bar(
         x=tmp["Ticker"], y=tmp["_reversal_score"],
@@ -718,9 +736,7 @@ def chart_jy_top_section_gainers(df, n=10):
     grp = grp[grp > 0]
     if grp.empty:
         return None
-    colours = px.colors.sample_colorscale(
-        "Greens", [i / max(len(grp) - 1, 1) for i in range(len(grp))]
-    )
+    colours = px.colors.sample_colorscale("Greens", colorscale_positions(len(grp)))
     fig = go.Figure(go.Bar(
         x=grp.values, y=grp.index, orientation="h",
         marker_color=colours,
@@ -743,9 +759,7 @@ def chart_jy_top_gainers(df, n=10):
     top = df[df["_jy_delta"].notna() & (df["_jy_delta"] > 0)].nlargest(n, "_jy_delta")
     if top.empty:
         return None
-    colours = px.colors.sample_colorscale(
-        "Greens", [i / max(len(top) - 1, 1) for i in range(len(top))]
-    )[::-1]
+    colours = px.colors.sample_colorscale("Greens", colorscale_positions(len(top)))[::-1]
     fig = go.Figure(go.Bar(
         x=top["Ticker"], y=top["_jy_delta"],
         marker_color=colours,
@@ -777,7 +791,7 @@ def chart_jy_top_stretched(df, n=10):
         return None
     colours = px.colors.sample_colorscale(
         [[0, "#4a1a4a"], [1, "#c9a6ff"]],
-        [i / max(len(top) - 1, 1) for i in range(len(top))],
+        colorscale_positions(len(top)),
     )[::-1]
     fig = go.Figure(go.Bar(
         x=top["Ticker"], y=top["_atr_20d_num"],
