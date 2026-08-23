@@ -328,6 +328,24 @@ def get_available_dates(history: pd.DataFrame):
         return []
     return sorted(history["date"].unique().tolist(), reverse=True)
 
+
+@st.cache_data(ttl=REFRESH_SECONDS)
+def load_daily_summary():
+    """Reads the latest row from the 'Daily Summary' tab (Date, Summary),
+    written once a day by daily_summary.py. Returns (date_str, text) or
+    (None, None) if the tab doesn't exist yet (e.g. before the feature's
+    first run)."""
+    try:
+        gc = _gspread_client()
+        ws = gc.open_by_key(GOOGLE_SHEET_ID).worksheet("Daily Summary")
+    except gspread.exceptions.WorksheetNotFound:
+        return None, None
+    rows = ws.get_all_values()
+    if len(rows) < 2:
+        return None, None
+    last_date, last_summary = rows[-1][0], rows[-1][1]
+    return last_date, last_summary
+
 # ─── CHARTS ───────────────────────────────────────────────────────────────────
 
 def chart_sector_treemap(df, mode="overview"):
@@ -1086,6 +1104,12 @@ st.title("📈 Signal Dashboard")
 last_close = np.busday_offset(datetime.now().date(), 0, roll="backward")
 last_close_str = last_close.astype("datetime64[D]").astype(object).strftime("%A %d %b %Y")
 st.caption(f"Last loaded: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  |  Last trading day: **{last_close_str}**")
+
+# ── Daily AI Recap (shown on every view, generated once/day) ──────────────────
+_summary_date, _summary_text = load_daily_summary()
+if _summary_text:
+    with st.expander(f"🤖 Daily AI Recap — {_summary_date}", expanded=(view_mode == "📡 Live")):
+        st.markdown(_summary_text)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HISTORICAL VIEW
