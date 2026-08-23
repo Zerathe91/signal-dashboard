@@ -303,10 +303,19 @@ def load_jy_history():
     return df.dropna(subset=["Timestamp", "JY Score"])
 
 
-def jy_score_24h_delta(ticker: str, current_value, jy_history: pd.DataFrame, tolerance_hours: float = 4):
+def jy_score_24h_delta(ticker: str, current_value, jy_history: pd.DataFrame, tolerance_hours: float = 4, max_lookback_hours: float = 96):
     """Change in JY Score vs. the reading closest to 24h ago for this
-    ticker, or None if there's no history close enough yet to compare
-    against (e.g. history tracking only just started)."""
+    ticker, or None if there's no history at all yet for this ticker.
+
+    Starts with a narrow window around exactly 24h ago (tolerance_hours)
+    and only widens if that comes up empty — which happens for markets
+    that don't trade on weekends (no new hourly bars = no new JY History
+    rows during that gap). Widening naturally falls back to the last
+    trading session's data (e.g. comparing Monday against Friday) instead
+    of showing no comparison at all for the whole weekend. Crypto/forex
+    (24/7) tickers are unaffected, since they always find a match in the
+    first, narrow pass.
+    """
     if jy_history is None or jy_history.empty or current_value is None or pd.isna(current_value):
         return None
     hist = jy_history[jy_history["Ticker"] == ticker]
@@ -315,12 +324,16 @@ def jy_score_24h_delta(ticker: str, current_value, jy_history: pd.DataFrame, tol
 
     target = datetime.now() - timedelta(hours=24)
     diffs  = (hist["Timestamp"] - target).abs()
-    within = hist[diffs <= pd.Timedelta(hours=tolerance_hours)]
-    if within.empty:
-        return None
 
-    nearest = within.loc[diffs[within.index].idxmin()]
-    return current_value - nearest["JY Score"]
+    window = tolerance_hours
+    while window <= max_lookback_hours:
+        within = hist[diffs <= pd.Timedelta(hours=window)]
+        if not within.empty:
+            nearest = within.loc[diffs[within.index].idxmin()]
+            return current_value - nearest["JY Score"]
+        window *= 2
+
+    return None
 
 
 def get_available_dates(history: pd.DataFrame):
