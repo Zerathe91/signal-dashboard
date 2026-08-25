@@ -1458,6 +1458,35 @@ df["_jy_delta"] = pd.to_numeric(
     errors="coerce",
 )
 
+# ── Market Health Overview — always from the FULL dataset (df), not the
+# filtered view below, so this reflects overall market health regardless
+# of whatever section/ticker filters someone has applied in the sidebar.
+st.markdown("---")
+st.subheader("🩺 Market Health Overview")
+
+_market_health_scores = df["_jy_score_num"].dropna()
+market_health = _market_health_scores.mean() if not _market_health_scores.empty else None
+
+INDICES_TICKERS = ["US30USD", "SPX500USD", "NAS100USD"]
+_indices_scores = df[df["Ticker"].isin(INDICES_TICKERS)]["_jy_score_num"].dropna()
+indices_health = _indices_scores.mean() if not _indices_scores.empty else None
+
+_health_counts = df["Health"].value_counts() if "Health" in df.columns else pd.Series(dtype=int)
+n_healthy   = int(_health_counts.get("✓ HEALTHY", 0))
+n_watch     = int(_health_counts.get("△ WATCH", 0))
+n_unhealthy = int(_health_counts.get("✗ UNHEALTHY", 0))
+
+_momentum_counts = df["Momentum"].value_counts() if "Momentum" in df.columns else pd.Series(dtype=int)
+n_accumulating = int(_momentum_counts.get("▲ Accumulating", 0))
+n_neutral      = int(_momentum_counts.get("— Neutral", 0))
+n_distributing = int(_momentum_counts.get("▼ Distributing", 0))
+
+mh1, mh2, mh3, mh4 = st.columns(4)
+mh1.metric("Market Health (Avg JY Score)", f"{market_health:.1f}" if market_health is not None else "—")
+mh2.metric("Indices Health (US30/SPX500/NAS100)", f"{indices_health:.1f}" if indices_health is not None else "—")
+mh3.metric("Healthy / Watch / Unhealthy", f"{n_healthy} / {n_watch} / {n_unhealthy}")
+mh4.metric("Accumulating / Neutral / Distributing", f"{n_accumulating} / {n_neutral} / {n_distributing}")
+
 # Sidebar section/ticker filters (populated after data load)
 all_sections = sorted([s for s in df["Section"].dropna().unique() if s.strip()])
 all_tickers  = sorted(df["Ticker"].dropna().unique().tolist())
