@@ -11,6 +11,7 @@ os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 
 import re
 import time
+import concurrent.futures
 import numpy as np
 import streamlit as st
 import pandas as pd
@@ -38,19 +39,15 @@ JY_HISTORY_SHEET_NAME = "JY History"
 TRENDING_INDICATORS = [
     "Bullish Swing",
     "Bottom Hourly",
-    "Trending Buy",
     "Hourly Breakout",
     "Scoreboard",
-    "KovaScore",
 ]
 
 TRENDING_RULES = {
     "Bullish Swing":  [(2, 6), (5, 4), (10, 2), (20, 1)],
     "Bottom Hourly":  [(2, 6), (5, 4), (10, 2), (20, 1)],
-    "Trending Buy":   [(2, 3), (5, 2), (10, 1)],
     "Hourly Breakout":[(2, 3), (5, 2), (10, 1)],
     "Scoreboard":     [(2, 3), (5, 2), (10, 1)],
-    "KovaScore":      [(2, 3), (5, 2), (10, 1)],
 }
 
 MAX_TRENDING = sum(r[0][1] for r in TRENDING_RULES.values() if r)
@@ -370,18 +367,30 @@ def get_available_dates(history: pd.DataFrame):
 def load_daily_summary():
     """Reads the latest row from the 'Daily Summary' tab (Date, Summary),
     written once a day by daily_summary.py. Returns (date_str, text) or
-    (None, None) if the tab doesn't exist yet (e.g. before the feature's
-    first run)."""
-    try:
+    (None, None) if the tab doesn't exist yet, or if anything goes wrong
+    reading it (network hiccup, API error, etc.) — this used to only
+    catch WorksheetNotFound, and the actual network call (get_all_values)
+    sat entirely OUTSIDE that try block, so any other failure crashed the
+    whole page before the rest of the dashboard could render. A hard
+    10s timeout is also enforced so a slow/hanging request can't freeze
+    page load indefinitely either."""
+    def _fetch():
         gc = _gspread_client()
         ws = gc.open_by_key(GOOGLE_SHEET_ID).worksheet("Daily Summary")
+        rows = ws.get_all_values()
+        if len(rows) < 2:
+            return None, None
+        return rows[-1][0], rows[-1][1]
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(_fetch).result(timeout=10)
     except gspread.exceptions.WorksheetNotFound:
         return None, None
-    rows = ws.get_all_values()
-    if len(rows) < 2:
+    except concurrent.futures.TimeoutError:
         return None, None
-    last_date, last_summary = rows[-1][0], rows[-1][1]
-    return last_date, last_summary
+    except Exception:
+        return None, None
 
 # ─── CHARTS ───────────────────────────────────────────────────────────────────
 
@@ -1312,15 +1321,6 @@ if view_mode == "📖 Definitions":
             ),
         },
         {
-            "name": "🔵 Trending Buy",
-            "category": "Trending",
-            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
-            "description": (
-                "The same reversal algorithm as Bottom Hourly but applied to the **10-minute** timeframe, "
-                "providing an earlier, more sensitive confirmation that a short-term bottom may be forming."
-            ),
-        },
-        {
             "name": "🔵 Hourly Breakout",
             "category": "Trending",
             "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
@@ -1339,16 +1339,6 @@ if view_mode == "📖 Definitions":
                 "a recent hourly buy signal, a recent 5-minute buy signal, price above the 20D SMA, "
                 "price above the 50D SMA, and a volume spike at the open. "
                 "Alert fires when the score reaches **4 or above**."
-            ),
-        },
-        {
-            "name": "🔵 KovaScore",
-            "category": "Trending",
-            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
-            "description": (
-                "A proprietary stock health score (1–99) combining relative strength vs 63-day return, "
-                "EMA stack alignment (10/20/50/200), distance from the 52-week high, volume trend, "
-                "and price position vs the 200 SMA. Alert fires when the score crosses **75 or above**."
             ),
         },
         {
