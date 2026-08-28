@@ -181,6 +181,15 @@ def signal_count(row, days_limit=None) -> int:
     )
 
 
+def most_recent_alert_days(row):
+    """Smallest days_ago across every tracked indicator for this ticker
+    — i.e. however long ago its most recently-fired signal was, no
+    matter which indicator it came from. Returns None if no indicator
+    has ever fired for this ticker."""
+    values = [d for ind in INDICATORS if (d := days_ago(row.get(f"{ind} Date", ""))) is not None]
+    return min(values) if values else None
+
+
 def score_badge_colour(score: int, max_val: int):
     ratio = score / max_val if max_val else 0
     if ratio >= 0.75: return "#003020", "#00e676"
@@ -644,17 +653,20 @@ def chart_potential_reversals(df, n=10):
 JY_COLORSCALE = [[0.0, "#8b0000"], [0.35, "#cc3300"], [0.5, "#8a6d00"], [0.7, "#1e5a1e"], [1.0, "#00c853"]]
 
 
-def chart_jy_sector_treemap(df, mode="overview"):
-    """Same heatmap as chart_sector_treemap, coloured by JY Score instead
-    of the point-system total. Fixed 0-100 colour range (not min/max of the
-    data) so colour always reflects the same green/orange/red health bands
-    used in the table, not a relative comparison."""
-    sec_df = df[(df["Section"].str.strip().ne("")) & df["_jy_score_num"].notna()].copy()
+def chart_jy_sector_treemap(df, mode="overview", score_col="_jy_score_num", label="JY Score"):
+    """Same heatmap as chart_sector_treemap, coloured by a JY-style score
+    column instead of the point-system total. `score_col`/`label` let
+    this be reused for both the Hourly JY Score (_jy_score_num) and
+    Daily JY Score (_daily_jy_score_num) heatmaps without duplicating
+    this whole function. Fixed 0-100 colour range (not min/max of the
+    data) so colour always reflects the same green/orange/red health
+    bands used in the table, not a relative comparison."""
+    sec_df = df[(df["Section"].str.strip().ne("")) & df[score_col].notna()].copy()
     if sec_df.empty:
         return None
     sec_grp = (
         sec_df.groupby("Section")
-        .agg(avg_score=("_jy_score_num", "mean"), count=("Ticker", "count"))
+        .agg(avg_score=(score_col, "mean"), count=("Ticker", "count"))
         .reset_index()
     )
 
@@ -663,24 +675,24 @@ def chart_jy_sector_treemap(df, mode="overview"):
         for _, sr in sec_grp.iterrows():
             labels.append(sr["Section"]); parents.append("root")
             values.append(int(sr["count"])); colors.append(float(sr["avg_score"]))
-            hovers.append(f"<b>{sr['Section']}</b><br>Avg JY Score: {sr['avg_score']:.1f}<br>{int(sr['count'])} tickers")
+            hovers.append(f"<b>{sr['Section']}</b><br>Avg {label}: {sr['avg_score']:.1f}<br>{int(sr['count'])} tickers")
         for _, row in sec_df.iterrows():
             labels.append(row["Ticker"]); parents.append(row["Section"])
-            values.append(1); colors.append(float(row["_jy_score_num"]))
-            hovers.append(f"<b>{row['Ticker']}</b><br>JY Score: {int(row['_jy_score_num'])}<br>{row['Section']}")
-        title_text = "JY Score Heatmap — click a sector to drill in"
+            values.append(1); colors.append(float(row[score_col]))
+            hovers.append(f"<b>{row['Ticker']}</b><br>{label}: {int(row[score_col])}<br>{row['Section']}")
+        title_text = f"{label} Heatmap — click a sector to drill in"
         maxdepth, pad = 2, 3
     else:
         labels, parents, values, colors, hovers = [], [], [], [], []
         for _, sr in sec_grp.iterrows():
             labels.append(sr["Section"]); parents.append("")
             values.append(int(sr["count"])); colors.append(float(sr["avg_score"]))
-            hovers.append(f"<b>{sr['Section']}</b><br>Avg JY Score: {sr['avg_score']:.1f}<br>{int(sr['count'])} tickers")
+            hovers.append(f"<b>{sr['Section']}</b><br>Avg {label}: {sr['avg_score']:.1f}<br>{int(sr['count'])} tickers")
         for _, row in sec_df.iterrows():
             labels.append(row["Ticker"]); parents.append(row["Section"])
-            values.append(1); colors.append(float(row["_jy_score_num"]))
-            hovers.append(f"<b>{row['Ticker']}</b><br>JY Score: {int(row['_jy_score_num'])}<br>{row['Section']}")
-        title_text = "JY Score Heatmap — sectors + tickers"
+            values.append(1); colors.append(float(row[score_col]))
+            hovers.append(f"<b>{row['Ticker']}</b><br>{label}: {int(row[score_col])}<br>{row['Section']}")
+        title_text = f"{label} Heatmap — sectors + tickers"
         maxdepth, pad = 2, 2
 
     fig = go.Figure(go.Treemap(
@@ -1126,7 +1138,8 @@ with st.sidebar:
         ticker_filter  = []
         sort_by = st.selectbox("Sort by", [
             "Total score (high→low)", "JY Score (high→low)", "Trending score (high→low)",
-            "Reversal score (high→low)", "Signals (high→low)", "Ticker (A→Z)"
+            "Reversal score (high→low)", "Signals (high→low)",
+            "Most recent alert (any indicator)", "Ticker (A→Z)"
         ])
 
     st.markdown("---")
@@ -1439,7 +1452,9 @@ df["_trending_score"] = df.apply(compute_trending_score, axis=1)
 df["_reversal_score"]  = df.apply(compute_reversal_score,  axis=1)
 df["_score"]           = df["_trending_score"] + df["_reversal_score"]
 df["_signal_count"]    = df.apply(signal_count, axis=1)
+df["_most_recent_days"] = df.apply(most_recent_alert_days, axis=1)
 df["_jy_score_num"]    = pd.to_numeric(df["JY Score"], errors="coerce") if "JY Score" in df.columns else pd.NA
+df["_daily_jy_score_num"] = pd.to_numeric(df["Daily JY Score"], errors="coerce") if "Daily JY Score" in df.columns else pd.NA
 df["_atr_20d_num"]     = df["ATR from 20D MA"].apply(parse_leading_float) if "ATR from 20D MA" in df.columns else pd.NA
 
 jy_history      = load_jy_history()
@@ -1517,6 +1532,11 @@ elif sort_by == "Reversal score (high→low)":
     filtered = filtered.sort_values("_reversal_score", ascending=False)
 elif sort_by == "Signals (high→low)":
     filtered = filtered.sort_values("_signal_count", ascending=False)
+elif sort_by == "Most recent alert (any indicator)":
+    # Ascending: a smaller "days ago" means the alert fired more
+    # recently, so freshest activity floats to the top. Tickers with no
+    # alert history at all (_most_recent_days is None) sort to the end.
+    filtered = filtered.sort_values("_most_recent_days", ascending=True, na_position="last")
 else:
     filtered = filtered.sort_values("Ticker")
 
@@ -1571,11 +1591,19 @@ with col_r3c:
 st.markdown("---")
 st.subheader("🟣 JY Score Overview")
 
-fig_jy_treemap = chart_jy_sector_treemap(df, mode=treemap_mode)
+fig_daily_jy_treemap = chart_jy_sector_treemap(
+    df, mode=treemap_mode, score_col="_daily_jy_score_num", label="Daily JY Score"
+)
+if fig_daily_jy_treemap:
+    st.plotly_chart(fig_daily_jy_treemap, use_container_width=True)
+else:
+    st.info("No Daily JY Score data yet.")
+
+fig_jy_treemap = chart_jy_sector_treemap(df, mode=treemap_mode, label="Hourly JY Score")
 if fig_jy_treemap:
     st.plotly_chart(fig_jy_treemap, use_container_width=True)
 else:
-    st.info("No JY Score data yet.")
+    st.info("No Hourly JY Score data yet.")
 
 col_jy1, col_jy2 = st.columns(2)
 with col_jy1:
