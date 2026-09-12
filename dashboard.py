@@ -80,7 +80,23 @@ JY_FIELDS = [
     "ATR from 20D MA",
     "Stretch Status",
     "Vol Pace vs Avg",
+    "Above 20D",
+    "Above 50D",
+    "Above 100D",
+    "Above 200D",
 ]
+
+# Some JY fields hold noticeably longer text (e.g. "Very Extended",
+# "Building history…") than the rest ("55", "Yes") — without a display
+# override these stretch their whole column much wider than everything
+# else in the table. Shortens the header label and lets the cell value
+# wrap onto two lines in a constrained width instead of forcing one
+# long unbroken line.
+JY_FIELD_DISPLAY_LABELS = {
+    "Stretch Status":  "Stretch",
+    "Vol Pace vs Avg": "Vol Pace",
+}
+JY_COMPACT_FIELDS = {"Stretch Status", "Vol Pace vs Avg"}
 
 CHART_BG   = "#0e1117"
 CHART_GRID = "#1e222d"
@@ -1055,7 +1071,9 @@ def build_html_table(df: pd.DataFrame) -> str:
     html.append('<th rowspan="2" style="padding:6px 10px; text-align:left; background:#1e222d; color:#aaa;">Ticker</th>')
     html.append('<th rowspan="2" style="padding:6px 10px; text-align:left; background:#1e222d; color:#aaa;">Section</th>')
     for field in JY_FIELDS:
-        html.append(f'<th rowspan="2" style="padding:6px 6px; background:#2a1e3a; color:#c9a6ff; font-size:11px;">{field}</th>')
+        label = JY_FIELD_DISPLAY_LABELS.get(field, field)
+        width = 'max-width:48px;' if field in JY_COMPACT_FIELDS else ''
+        html.append(f'<th rowspan="2" style="padding:6px 4px; {width} background:#2a1e3a; color:#c9a6ff; font-size:11px;">{label}</th>')
     html.append('<th rowspan="2" style="padding:6px 6px; background:#1e222d; color:#aaa;">Total</th>')
     html.append(group_header("— SIGNALS —", len(INDICATORS) * 2, "#0d2a45"))
     html.append('</tr>')
@@ -1064,7 +1082,7 @@ def build_html_table(df: pd.DataFrame) -> str:
     html.append('<tr style="background:#1e222d; color:#aaa;">')
     for ind in INDICATORS:
         html.append(
-            f'<th colspan="2" style="padding:4px 3px; font-size:11px;">{ind}'
+            f'<th colspan="2" style="padding:4px 3px; max-width:90px; font-size:11px;">{ind}'
             f'<br><span style="font-size:9px;color:#555">Date · Price</span></th>'
         )
     html.append('</tr>')
@@ -1098,7 +1116,13 @@ def build_html_table(df: pd.DataFrame) -> str:
                     f'font-weight:bold; font-size:12px; white-space:nowrap;">{val}{delta_html}</td>'
                 )
             else:
-                html.append(f'<td style="padding:5px 6px; background:#1a1428; color:#d8c7f2; font-size:11px; white-space:nowrap;">{val}</td>')
+                if field in JY_COMPACT_FIELDS:
+                    html.append(
+                        f'<td style="padding:4px 3px; max-width:48px; background:#1a1428; color:#d8c7f2; '
+                        f'font-size:9px; line-height:1.2; white-space:normal;">{val}</td>'
+                    )
+                else:
+                    html.append(f'<td style="padding:5px 6px; background:#1a1428; color:#d8c7f2; font-size:11px; white-space:nowrap;">{val}</td>')
         # Total
         tbg, tfg = score_badge_colour(total, MAX_SCORE)
         html.append(
@@ -1119,7 +1143,7 @@ def build_html_table(df: pd.DataFrame) -> str:
             price_disp = f"${price_val}" if price_val else "—"
 
             html.append(
-                f'<td colspan="2" style="padding:4px; background:{c["bg"]}; color:{c["fg"]}; font-size:11px;">'
+                f'<td colspan="2" style="padding:4px; max-width:90px; background:{c["bg"]}; color:{c["fg"]}; font-size:11px;">'
                 f'{short_date}<br><span style="font-size:10px;">{price_disp}</span></td>'
             )
         html.append('</tr>')
