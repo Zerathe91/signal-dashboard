@@ -35,51 +35,40 @@ REFRESH_SECONDS  = 60
 # regardless of how much history had actually accumulated in the sheet.
 JY_HISTORY_SHEET_NAME = "JY History"
  
-# ── Trending indicators (momentum / trend-following) ──────────────────────────
-TRENDING_INDICATORS = [
+# ── Point-scoring indicators — single unified score (the former
+# Trending/Reversal split has been removed; every indicator below now
+# counts toward one Total Score). Scoreboard, Volume Spike, and Golden
+# Pocket were removed entirely (no longer tracked by google_sheet_bot.py
+# at all), and 2H/3H/4H Bottom were added — using the same point tiers
+# as Bottom Hourly / Major Bottom respectively (which already happen to
+# be identical tiers).
+INDICATORS = [
     "Bullish Swing",
     "Bottom Hourly",
     "Hourly Breakout",
-    "Scoreboard",
-]
-
-TRENDING_RULES = {
-    "Bullish Swing":  [(2, 6), (5, 4), (10, 2), (20, 1)],
-    "Bottom Hourly":  [(2, 6), (5, 4), (10, 2), (20, 1)],
-    "Hourly Breakout":[(2, 3), (5, 2), (10, 1)],
-    "Scoreboard":     [(2, 3), (5, 2), (10, 1)],
-}
-
-MAX_TRENDING = sum(r[0][1] for r in TRENDING_RULES.values() if r)
-
-# ── Observation indicators (no score, shown for reference) ───────────────────
-OBSERVATION_INDICATORS = [
-    "Volume Spike",
-]
-
-# ── Reversal indicators (mean reversion / bottom-finding) ─────────────────────
-REVERSAL_INDICATORS = [
     "Hourly Bullish Divergence",
-    "Golden Pocket",
     "Major Bottom",
     "Bottom Daily",
     "Mean Reversion",
+    "2H Bottom",
+    "3H Bottom",
+    "4H Bottom",
 ]
 
-REVERSAL_RULES = {
+SCORE_RULES = {
+    "Bullish Swing":             [(2, 6), (5, 4), (10, 2), (20, 1)],
+    "Bottom Hourly":             [(2, 6), (5, 4), (10, 2), (20, 1)],
+    "Hourly Breakout":           [(2, 3), (5, 2), (10, 1)],
     "Hourly Bullish Divergence": [(2, 3), (5, 2), (10, 1)],
-    "Golden Pocket":             [(2, 3), (5, 2), (10, 1)],
     "Major Bottom":              [(2, 6), (5, 4), (10, 2), (20, 1)],
     "Bottom Daily":              [(2, 6), (5, 4), (10, 2), (20, 1)],
     "Mean Reversion":            [(2, 3), (5, 2), (10, 1)],
+    "2H Bottom":                 [(2, 6), (5, 4), (10, 2), (20, 1)],
+    "3H Bottom":                 [(2, 6), (5, 4), (10, 2), (20, 1)],
+    "4H Bottom":                 [(2, 6), (5, 4), (10, 2), (20, 1)],
 }
 
-MAX_REVERSAL = sum(r[0][1] for r in REVERSAL_RULES.values() if r)
-
-# ── Combined (all indicators in display order) ────────────────────────────────
-INDICATORS = TRENDING_INDICATORS + OBSERVATION_INDICATORS + REVERSAL_INDICATORS
-SCORE_RULES = {**TRENDING_RULES, **{"Volume Spike": []}, **REVERSAL_RULES}
-MAX_SCORE   = MAX_TRENDING + MAX_REVERSAL
+MAX_SCORE = sum(r[0][1] for r in SCORE_RULES.values() if r)
 
 # ── Hourly JY Score fields (from the Discord "Hourly JY Score" cards) ─────────
 # These are plain columns straight from the sheet — no date-based scoring,
@@ -139,14 +128,8 @@ def _score_from_rules(row, rules: dict) -> int:
     return total
 
 
-def compute_trending_score(row) -> int:
-    return _score_from_rules(row, TRENDING_RULES)
-
-def compute_reversal_score(row) -> int:
-    return _score_from_rules(row, REVERSAL_RULES)
-
 def compute_score(row) -> int:
-    return compute_trending_score(row) + compute_reversal_score(row)
+    return _score_from_rules(row, SCORE_RULES)
 
 
 def score_gained_today_total(row) -> int:
@@ -255,23 +238,22 @@ def _gspread_client():
 
 def _sheets_call_with_backoff(func, *args, max_attempts=4, timeout=10, **kwargs):
     """Runs a gspread call with a hard timeout (so a hang can't freeze
-    page load indefinitely) and retries with exponential backoff
-    specifically on 429 rate-limit errors — Google's own recommended
-    approach for the Sheets API. Every bot in this project (the two
-    Discord bots, the daily summary script, and this dashboard) shares
-    ONE Google service account, and Google's quota (60 requests/minute)
-    applies per service account, not per process — so occasional 429s
-    under combined load across everything hitting the sheet at once are
-    expected, not a sign of anything actually broken. Backing off and
-    retrying resolves them within a few seconds without the person ever
-    seeing a crash."""
+    page load indefinitely) and retries with exponential backoff on
+    transient Google-side errors: 429 (rate limit — Google's own
+    recommended handling, since every bot in this project shares ONE
+    service account and its 60-requests/minute quota) AND 5xx errors
+    (500/502/503 — Google's own servers having a transient internal
+    problem, unrelated to quota, but just as transient and worth
+    retrying rather than surfacing as a crash). A 4xx error other than
+    429 (e.g. a real auth/permission problem) is NOT retried — that's a
+    genuine problem retrying won't fix."""
     for attempt in range(max_attempts):
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 return executor.submit(func, *args, **kwargs).result(timeout=timeout)
         except gspread.exceptions.APIError as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
-            if status == 429 and attempt < max_attempts - 1:
+            if status is not None and (status == 429 or status >= 500) and attempt < max_attempts - 1:
                 time.sleep(2 ** attempt)  # 1s, 2s, 4s, ...
                 continue
             raise
@@ -590,7 +572,7 @@ def chart_sector_treemap(df, mode="overview"):
             colors.append(float(row["_score"]))
             hovers.append(
                 f"<b>{row['Ticker']}</b><br>"
-                f"Total: {int(row['_score'])}  Trend: {int(row['_trending_score'])}  Rev: {int(row['_reversal_score'])}<br>"
+                f"Total: {int(row['_score'])}<br>"
                 f"{row['Section']}"
             )
         title_text = "Sector Heatmap — click a sector to drill in"
@@ -612,7 +594,7 @@ def chart_sector_treemap(df, mode="overview"):
             colors.append(float(row["_score"]))
             hovers.append(
                 f"<b>{row['Ticker']}</b><br>"
-                f"Total: {int(row['_score'])}  Trend: {int(row['_trending_score'])}  Rev: {int(row['_reversal_score'])}<br>"
+                f"Total: {int(row['_score'])}<br>"
                 f"{row['Section']}"
             )
         title_text = "Sector Heatmap — sectors + tickers"
@@ -648,36 +630,28 @@ def chart_sector_treemap(df, mode="overview"):
 
 
 def chart_top_sections_stacked(df, n=10):
-    """Stacked bar: trending vs reversal avg score per section."""
+    """Top n sections by average Total Score. (Previously a stacked
+    Trending-vs-Reversal comparison — now a single unified score, so
+    just a plain bar chart.)"""
     grp = (
         df[df["Section"].str.strip().ne("")]
-        .groupby("Section")
-        .agg(trend=("_trending_score", "mean"), reversal=("_reversal_score", "mean"))
-        .assign(total=lambda x: x["trend"] + x["reversal"])
-        .sort_values("total", ascending=True)
+        .groupby("Section")["_score"].mean()
+        .sort_values(ascending=True)
         .tail(n)
     )
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        name="Trending", x=grp["trend"], y=grp.index, orientation="h",
+    fig = go.Figure(go.Bar(
+        x=grp.values, y=grp.index, orientation="h",
         marker_color="#1e88e5",
-        text=[f"{v:.1f}" for v in grp["trend"]],
-        textposition="inside", textfont=dict(color="#fff", size=10),
-    ))
-    fig.add_trace(go.Bar(
-        name="Reversal", x=grp["reversal"], y=grp.index, orientation="h",
-        marker_color="#00c853",
-        text=[f"{v:.1f}" for v in grp["reversal"]],
-        textposition="inside", textfont=dict(color="#fff", size=10),
+        text=[f"{v:.1f}" for v in grp.values],
+        textposition="outside", textfont=dict(color=CHART_TEXT, size=10),
     ))
     fig.update_layout(
-        barmode="stack",
-        title=dict(text=f"Top {n} Sections — Trending vs Reversal", font=dict(color=CHART_TEXT, size=13)),
+        title=dict(text=f"Top {n} Sections — Avg Total Score", font=dict(color=CHART_TEXT, size=13)),
         paper_bgcolor=CHART_BG, plot_bgcolor=CHART_GRID, font=dict(color=CHART_TEXT),
         margin=dict(l=10, r=50, t=40, b=10),
         xaxis=dict(gridcolor="#2a2a2a", zeroline=False, range=[0, MAX_SCORE * 1.15]),
         yaxis=dict(gridcolor="#2a2a2a", zeroline=False),
-        legend=dict(font=dict(color=CHART_TEXT), orientation="h", y=1.08),
+        showlegend=False,
         height=380,
     )
     return fig
@@ -742,40 +716,49 @@ def chart_top_section_gainers_today(df, n=10):
     return fig
 
 
-def chart_top_trending(df, n=10):
-    top = df.nlargest(n, "_trending_score")
-    top = top[top["_trending_score"] > 0]
+def chart_top_scorers(df, n=10):
+    """Top n tickers by unified Total Score. (Previously 'Top 10
+    Trending', scoped to just the trending-category indicators — now
+    uses the single combined score since that split no longer exists.)"""
+    top = df.nlargest(n, "_score")
+    top = top[top["_score"] > 0]
     if top.empty:
         return None
     colours = px.colors.sample_colorscale("Blues", colorscale_positions(len(top)))[::-1]
     fig = go.Figure(go.Bar(
-        x=top["Ticker"], y=top["_trending_score"],
+        x=top["Ticker"], y=top["_score"],
         marker_color=colours,
-        text=top["_trending_score"], textposition="outside",
+        text=top["_score"], textposition="outside",
         textfont=dict(color=CHART_TEXT, size=11),
         customdata=top["Section"],
-        hovertemplate="<b>%{x}</b><br>Trending Score: %{y}<br>Section: %{customdata}<extra></extra>",
+        hovertemplate="<b>%{x}</b><br>Total Score: %{y}<br>Section: %{customdata}<extra></extra>",
     ))
     fig.update_layout(
-        title=dict(text="Top 10 Trending", font=dict(color=CHART_TEXT, size=13)),
+        title=dict(text="Top 10 by Total Score", font=dict(color=CHART_TEXT, size=13)),
         paper_bgcolor=CHART_BG, plot_bgcolor=CHART_GRID, font=dict(color=CHART_TEXT),
         margin=dict(l=10, r=10, t=40, b=10),
         xaxis=dict(gridcolor="#2a2a2a", zeroline=False, type="category"),
-        yaxis=dict(gridcolor="#2a2a2a", zeroline=False, range=[0, MAX_TRENDING * 1.2], title="Trending Score"),
+        yaxis=dict(gridcolor="#2a2a2a", zeroline=False, range=[0, MAX_SCORE * 1.2], title="Total Score"),
         showlegend=False, height=320,
     )
     return fig
 
 
-def chart_potential_reversals(df, n=10):
+def chart_fresh_setups(df, n=10):
+    """Top n tickers whose ENTIRE current score comes from signals
+    within the last 3 trading days — i.e. a freshly-forming setup, not
+    an old score that just hasn't decayed yet. (Previously scoped to
+    just the reversal-category indicators as 'Potential Reversals' —
+    now checks across all indicators since that split no longer
+    exists.)"""
     tmp = df.copy()
-    tmp["_recent_reversal"] = tmp.apply(
-        lambda r: score_from_recent(r, REVERSAL_RULES, window=3), axis=1
+    tmp["_recent_score"] = tmp.apply(
+        lambda r: score_from_recent(r, SCORE_RULES, window=3), axis=1
     )
     tmp = tmp[
-        (tmp["_reversal_score"] >= 2) &
-        (tmp["_recent_reversal"] == tmp["_reversal_score"])
-    ].nlargest(n, "_reversal_score")
+        (tmp["_score"] >= 2) &
+        (tmp["_recent_score"] == tmp["_score"])
+    ].nlargest(n, "_score")
     if tmp.empty:
         return None
     colours = px.colors.sample_colorscale(
@@ -783,19 +766,19 @@ def chart_potential_reversals(df, n=10):
         colorscale_positions(len(tmp)),
     )[::-1]
     fig = go.Figure(go.Bar(
-        x=tmp["Ticker"], y=tmp["_reversal_score"],
+        x=tmp["Ticker"], y=tmp["_score"],
         marker_color=colours,
-        text=tmp["_reversal_score"], textposition="outside",
+        text=tmp["_score"], textposition="outside",
         textfont=dict(color=CHART_TEXT, size=11),
         customdata=tmp["Section"],
-        hovertemplate="<b>%{x}</b><br>Reversal Score: %{y}<br>Section: %{customdata}<br>All from last 3 trading days<extra></extra>",
+        hovertemplate="<b>%{x}</b><br>Total Score: %{y}<br>Section: %{customdata}<br>All from last 3 trading days<extra></extra>",
     ))
     fig.update_layout(
-        title=dict(text="Top 10 Potential Reversals (reversal score, last 3td)", font=dict(color=CHART_TEXT, size=13)),
+        title=dict(text="Top 10 Fresh Setups (all signals, last 3td)", font=dict(color=CHART_TEXT, size=13)),
         paper_bgcolor=CHART_BG, plot_bgcolor=CHART_GRID, font=dict(color=CHART_TEXT),
         margin=dict(l=10, r=10, t=40, b=10),
         xaxis=dict(gridcolor="#2a2a2a", zeroline=False, type="category"),
-        yaxis=dict(gridcolor="#2a2a2a", zeroline=False, range=[0, MAX_REVERSAL * 1.2], title="Reversal Score"),
+        yaxis=dict(gridcolor="#2a2a2a", zeroline=False, range=[0, MAX_SCORE * 1.2], title="Total Score"),
         showlegend=False, height=320,
     )
     return fig
@@ -1073,12 +1056,8 @@ def build_html_table(df: pd.DataFrame) -> str:
     html.append('<th rowspan="2" style="padding:6px 10px; text-align:left; background:#1e222d; color:#aaa;">Section</th>')
     for field in JY_FIELDS:
         html.append(f'<th rowspan="2" style="padding:6px 6px; background:#2a1e3a; color:#c9a6ff; font-size:11px;">{field}</th>')
-    html.append('<th rowspan="2" style="padding:6px 6px; background:#1e222d; color:#aaa;">Trend</th>')
-    html.append('<th rowspan="2" style="padding:6px 6px; background:#1e222d; color:#aaa;">Rev</th>')
     html.append('<th rowspan="2" style="padding:6px 6px; background:#1e222d; color:#aaa;">Total</th>')
-    html.append(group_header("— TRENDING —", len(TRENDING_INDICATORS) * 2, "#0d2a45"))
-    html.append(group_header("OBS", len(OBSERVATION_INDICATORS) * 2, "#1a1a2a"))
-    html.append(group_header("— REVERSAL —", len(REVERSAL_INDICATORS) * 2, "#0d3020"))
+    html.append(group_header("— SIGNALS —", len(INDICATORS) * 2, "#0d2a45"))
     html.append('</tr>')
 
     # Row 2: indicator names
@@ -1097,9 +1076,7 @@ def build_html_table(df: pd.DataFrame) -> str:
         if not ticker:
             continue
 
-        t_score = int(row.get("_trending_score", 0))
-        r_score = int(row.get("_reversal_score",  0))
-        total   = t_score + r_score
+        total = int(row.get("_score", 0))
 
         html.append('<tr style="border-bottom:1px solid #1a1a1a;">')
         html.append(f'<td style="padding:5px 10px; color:#e0e0e0;">{ticker}</td>')
@@ -1122,8 +1099,6 @@ def build_html_table(df: pd.DataFrame) -> str:
                 )
             else:
                 html.append(f'<td style="padding:5px 6px; background:#1a1428; color:#d8c7f2; font-size:11px; white-space:nowrap;">{val}</td>')
-        html.append(score_cell(t_score, MAX_TRENDING))
-        html.append(score_cell(r_score, MAX_REVERSAL))
         # Total
         tbg, tfg = score_badge_colour(total, MAX_SCORE)
         html.append(
@@ -1142,10 +1117,6 @@ def build_html_table(df: pd.DataFrame) -> str:
             # so the time comes through, don't truncate to just the date.
             short_date = date_val.strip() if date_val and date_val.strip() else "—"
             price_disp = f"${price_val}" if price_val else "—"
-
-            # Observation column gets slightly different bg tint
-            if ind in OBSERVATION_INDICATORS:
-                c["bg"] = c["bg"] if d is not None else "#0d0d1a"
 
             html.append(
                 f'<td colspan="2" style="padding:4px; background:{c["bg"]}; color:{c["fg"]}; font-size:11px;">'
@@ -1255,13 +1226,13 @@ with st.sidebar:
             ) if compare_options else None
 
         section_filter = []; freshness_days = None; min_score = 0
-        min_trending = 0; min_reversal = 0; min_signals = 1
+        min_signals = 1
         must_have = []; ticker_filter = []; sort_by = "Score (high→low)"
 
     elif view_mode in ("🔔 Change Log", "📖 Definitions"):
         selected_date = compare_date = None
         section_filter = []; freshness_days = None; min_score = 0
-        min_trending = 0; min_reversal = 0; min_signals = 1
+        min_signals = 1
         must_have = []; ticker_filter = []; sort_by = "Total score (high→low)"
 
     else:
@@ -1279,8 +1250,6 @@ with st.sidebar:
 
         st.markdown("---")
         st.markdown("**Score filters**")
-        min_trending = st.slider(f"Min Trending score (max {MAX_TRENDING})", 0, MAX_TRENDING, 0)
-        min_reversal = st.slider(f"Min Reversal score (max {MAX_REVERSAL})", 0, MAX_REVERSAL, 0)
         min_score    = st.slider(f"Min Total score (max {MAX_SCORE})",    0, MAX_SCORE,    0)
         min_signals  = st.slider("Min signals", 1, len(INDICATORS), 1)
 
@@ -1289,8 +1258,7 @@ with st.sidebar:
         section_filter = []
         ticker_filter  = []
         sort_by = st.selectbox("Sort by", [
-            "Total score (high→low)", "JY Score (high→low)", "Trending score (high→low)",
-            "Reversal score (high→low)", "Signals (high→low)",
+            "Total score (high→low)", "JY Score (high→low)", "Signals (high→low)",
             "Most recent alert (any indicator)", "Ticker (A→Z)"
         ])
 
@@ -1372,13 +1340,13 @@ if view_mode == "📅 Historical":
             if checked:
                 st.plotly_chart(
                     chart_historical_section_avg(history, sections=checked),
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.info("No sections selected. Tick some boxes above to see the chart.")
         with col_r:
             if compare_date:
-                st.plotly_chart(chart_score_change(history, selected_date, compare_date), use_container_width=True)
+                st.plotly_chart(chart_score_change(history, selected_date, compare_date), width="stretch")
             else:
                 st.info("Select a comparison date to see score changes.")
     else:
@@ -1405,9 +1373,7 @@ if view_mode == "🔔 Change Log":
         st.error("No data found.")
         st.stop()
 
-    df_cl["_trending_score"] = df_cl.apply(compute_trending_score, axis=1)
-    df_cl["_reversal_score"]  = df_cl.apply(compute_reversal_score,  axis=1)
-    df_cl["_score"]           = df_cl["_trending_score"] + df_cl["_reversal_score"]
+    df_cl["_score"]           = df_cl.apply(compute_score, axis=1)
 
     WATCH_INDICATORS = ["Bullish Swing", "Bottom Hourly", "Bottom Daily", "Major Bottom"]
 
@@ -1437,7 +1403,7 @@ if view_mode == "🔔 Change Log":
                     "Days Ago": int(r["_days"]),
                     "Total Score": int(r["_score"]),
                 })
-            st.dataframe(pd.DataFrame(rows).set_index("Ticker"), use_container_width=True)
+            st.dataframe(pd.DataFrame(rows).set_index("Ticker"), width="stretch")
         st.markdown("---")
 
     st.subheader("🏆 Tickers that crossed above 15 points today")
@@ -1448,10 +1414,10 @@ if view_mode == "🔔 Change Log":
     if high_scorers.empty:
         st.info("No tickers moved above 15 points today.")
     else:
-        display = high_scorers[["Ticker", "Section", "_gained_today", "_trending_score", "_reversal_score", "_score"]].rename(columns={
-            "_gained_today": "Gained Today", "_trending_score": "Trend", "_reversal_score": "Reversal", "_score": "Total"
+        display = high_scorers[["Ticker", "Section", "_gained_today", "_score"]].rename(columns={
+            "_gained_today": "Gained Today", "_score": "Total"
         }).set_index("Ticker")
-        st.dataframe(display, use_container_width=True)
+        st.dataframe(display, width="stretch")
 
     st.stop()
 
@@ -1496,27 +1462,6 @@ if view_mode == "📖 Definitions":
             ),
         },
         {
-            "name": "🔵 Scoreboard",
-            "category": "Trending",
-            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
-            "description": (
-                "A composite dashboard score (out of 6) that checks: 140MA > 625MA on the 5-minute chart, "
-                "a recent hourly buy signal, a recent 5-minute buy signal, price above the 20D SMA, "
-                "price above the 50D SMA, and a volume spike at the open. "
-                "Alert fires when the score reaches **4 or above**."
-            ),
-        },
-        {
-            "name": "⚪ Volume Spike",
-            "category": "Observation",
-            "scoring": "Observation only — no score",
-            "description": (
-                "Detects when the first 30 minutes of market open volume exceeds **1.5× the average** "
-                "of the same opening window over the prior 7 trading days. "
-                "Used as a confirmation signal rather than a standalone buy signal — no score is awarded."
-            ),
-        },
-        {
             "name": "🟢 Hourly Bullish Divergence",
             "category": "Reversal",
             "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
@@ -1524,16 +1469,6 @@ if view_mode == "📖 Definitions":
                 "Fires on the **hourly** chart when price makes a lower low but the RSI makes a higher low — "
                 "a classic bullish divergence pattern indicating weakening selling pressure and a potential "
                 "trend reversal to the upside."
-            ),
-        },
-        {
-            "name": "🟢 Golden Pocket",
-            "category": "Reversal",
-            "scoring": "≤2td: 3pts | ≤5td: 2pts | ≤10td: 1pt",
-            "description": (
-                "Fires when price on the **hourly** chart enters the 0.618–0.786 Fibonacci retracement zone "
-                "calculated from the swing high and low of the last 500 candles. "
-                "This zone is considered a high-probability support area for a bounce after a pullback."
             ),
         },
         {
@@ -1600,9 +1535,7 @@ if df.empty:
     st.error("No data found. Check your Sheet ID and credentials.json.")
     st.stop()
 
-df["_trending_score"] = df.apply(compute_trending_score, axis=1)
-df["_reversal_score"]  = df.apply(compute_reversal_score,  axis=1)
-df["_score"]           = df["_trending_score"] + df["_reversal_score"]
+df["_score"]           = df.apply(compute_score, axis=1)
 df["_signal_count"]    = df.apply(signal_count, axis=1)
 df["_most_recent_days"] = df.apply(most_recent_alert_days, axis=1)
 df["_jy_score_num"]    = pd.to_numeric(df["JY Score"], errors="coerce") if "JY Score" in df.columns else pd.NA
@@ -1680,7 +1613,7 @@ for _tab_name, _display_label in [("Stochastics", "SPX500USD"), ("NAS100USD", "N
         with _col:
             _fig = chart_stochastics_mini(_stoch_data.get(_tf), _tf, _display_label)
             if _fig:
-                st.plotly_chart(_fig, use_container_width=True, config={"displayModeBar": False})
+                st.plotly_chart(_fig, width="stretch", config={"displayModeBar": False})
             else:
                 st.info(f"No {_tf} data yet.")
 
@@ -1698,8 +1631,6 @@ if freshness_days is not None:
     filtered["_signal_count"] = filtered.apply(lambda r: signal_count(r, freshness_days), axis=1)
 if section_filter:
     filtered = filtered[filtered["Section"].isin(section_filter)]
-filtered = filtered[filtered["_trending_score"] >= min_trending]
-filtered = filtered[filtered["_reversal_score"]  >= min_reversal]
 filtered = filtered[filtered["_score"]           >= min_score]
 filtered = filtered[filtered["_signal_count"]    >= min_signals]
 for ind in must_have:
@@ -1718,10 +1649,6 @@ if sort_by == "Total score (high→low)":
     filtered = filtered.sort_values("_score", ascending=False)
 elif sort_by == "JY Score (high→low)":
     filtered = filtered.sort_values("_jy_score_num", ascending=False, na_position="last")
-elif sort_by == "Trending score (high→low)":
-    filtered = filtered.sort_values("_trending_score", ascending=False)
-elif sort_by == "Reversal score (high→low)":
-    filtered = filtered.sort_values("_reversal_score", ascending=False)
 elif sort_by == "Signals (high→low)":
     filtered = filtered.sort_values("_signal_count", ascending=False)
 elif sort_by == "Most recent alert (any indicator)":
@@ -1734,27 +1661,26 @@ else:
 
 # Metrics
 top_row = filtered.iloc[0] if not filtered.empty else None
-c1, c2, c3, c4, c5, c6 = st.columns(6)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Shown",        len(filtered[filtered["Ticker"].str.strip() != ""]))
 c2.metric("Total tickers",len(df[df["Ticker"].str.strip() != ""]))
-c3.metric("Max Trend",    MAX_TRENDING)
-c4.metric("Max Reversal", MAX_REVERSAL)
-c5.metric("Top ticker",   top_row["Ticker"] if top_row is not None else "—")
-c6.metric("Top score",    int(top_row["_score"]) if top_row is not None else 0)
+c3.metric("Max Score",    MAX_SCORE)
+c4.metric("Top ticker",   top_row["Ticker"] if top_row is not None else "—")
+c5.metric("Top score",    int(top_row["_score"]) if top_row is not None else 0)
 
 # Charts row 1 — full-width treemap
 st.markdown("---")
 st.subheader("📊 Overview")
-st.plotly_chart(chart_sector_treemap(df, mode=treemap_mode), use_container_width=True)
+st.plotly_chart(chart_sector_treemap(df, mode=treemap_mode), width="stretch")
 
 # Charts row 2 — section-level
 col_r2a, col_r2b = st.columns(2)
 with col_r2a:
-    st.plotly_chart(chart_top_sections_stacked(df, n=10), use_container_width=True)
+    st.plotly_chart(chart_top_sections_stacked(df, n=10), width="stretch")
 with col_r2b:
     fig_sec_gainers = chart_top_section_gainers_today(df)
     if fig_sec_gainers:
-        st.plotly_chart(fig_sec_gainers, use_container_width=True)
+        st.plotly_chart(fig_sec_gainers, width="stretch")
     else:
         st.info("No section gains today yet.")
 
@@ -1763,21 +1689,21 @@ col_r3a, col_r3b, col_r3c = st.columns(3)
 with col_r3a:
     fig_gainers = chart_top_gainers_today(df)
     if fig_gainers:
-        st.plotly_chart(fig_gainers, use_container_width=True)
+        st.plotly_chart(fig_gainers, width="stretch")
     else:
         st.info("No signals fired in the last trading day yet.")
 with col_r3b:
-    fig_trending = chart_top_trending(df)
-    if fig_trending:
-        st.plotly_chart(fig_trending, use_container_width=True)
+    fig_top_scorers = chart_top_scorers(df)
+    if fig_top_scorers:
+        st.plotly_chart(fig_top_scorers, width="stretch")
     else:
-        st.info("No trending scores yet.")
+        st.info("No scores yet.")
 with col_r3c:
-    fig_reversals = chart_potential_reversals(df)
-    if fig_reversals:
-        st.plotly_chart(fig_reversals, use_container_width=True)
+    fig_fresh = chart_fresh_setups(df)
+    if fig_fresh:
+        st.plotly_chart(fig_fresh, width="stretch")
     else:
-        st.info("No potential reversals detected.")
+        st.info("No fresh setups detected.")
 
 # ── JY Score charts — mirrors the point-system section above ─────────────────
 st.markdown("---")
@@ -1787,13 +1713,13 @@ fig_daily_jy_treemap = chart_jy_sector_treemap(
     df, mode=treemap_mode, score_col="_daily_jy_score_num", label="Daily JY Score"
 )
 if fig_daily_jy_treemap:
-    st.plotly_chart(fig_daily_jy_treemap, use_container_width=True)
+    st.plotly_chart(fig_daily_jy_treemap, width="stretch")
 else:
     st.info("No Daily JY Score data yet.")
 
 fig_jy_treemap = chart_jy_sector_treemap(df, mode=treemap_mode, label="Hourly JY Score")
 if fig_jy_treemap:
-    st.plotly_chart(fig_jy_treemap, use_container_width=True)
+    st.plotly_chart(fig_jy_treemap, width="stretch")
 else:
     st.info("No Hourly JY Score data yet.")
 
@@ -1801,13 +1727,13 @@ col_jy1, col_jy2 = st.columns(2)
 with col_jy1:
     fig_jy_sections = chart_jy_top_sections(df)
     if fig_jy_sections:
-        st.plotly_chart(fig_jy_sections, use_container_width=True)
+        st.plotly_chart(fig_jy_sections, width="stretch")
     else:
         st.info("No JY Score data yet.")
 with col_jy2:
     fig_jy_sec_gainers = chart_jy_top_section_gainers(df)
     if fig_jy_sec_gainers:
-        st.plotly_chart(fig_jy_sec_gainers, use_container_width=True)
+        st.plotly_chart(fig_jy_sec_gainers, width="stretch")
     else:
         st.info("No JY Score section gains yet (needs ~24h of history).")
 
@@ -1815,13 +1741,13 @@ col_jy3, col_jy4 = st.columns(2)
 with col_jy3:
     fig_jy_gainers = chart_jy_top_gainers(df)
     if fig_jy_gainers:
-        st.plotly_chart(fig_jy_gainers, use_container_width=True)
+        st.plotly_chart(fig_jy_gainers, width="stretch")
     else:
         st.info("No JY Score gainers yet (needs ~24h of history).")
 with col_jy4:
     fig_jy_stretched = chart_jy_top_stretched(df)
     if fig_jy_stretched:
-        st.plotly_chart(fig_jy_stretched, use_container_width=True)
+        st.plotly_chart(fig_jy_stretched, width="stretch")
     else:
         st.info("No stretched-from-20D-MA data yet.")
 
