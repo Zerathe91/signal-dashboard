@@ -504,6 +504,99 @@ def load_stochastics_tab(tab_name: str):
         result[label] = {"dates": dates, "k": ks, "d": ds}
     return result
 
+
+@st.cache_data(ttl=REFRESH_SECONDS)
+def load_indices_signals():
+    """Reads the 'Indices Signals History' tab (Ticker, Timeframe,
+    Direction, Timestamp, Price) written by google_sheet_bot.py.
+    Returns a list of dicts, or [] if the tab doesn't exist yet or
+    anything goes wrong reading it."""
+    def _fetch():
+        gc = _gspread_client()
+        ws = gc.open_by_key(GOOGLE_SHEET_ID).worksheet("Indices Signals History")
+        return ws.get_all_values()
+
+    try:
+        rows = _sheets_call_with_backoff(_fetch)
+    except gspread.exceptions.WorksheetNotFound:
+        return []
+    except Exception:
+        return []
+
+    if len(rows) < 2:
+        return []
+
+    header = rows[0]
+    records = []
+    for row in rows[1:]:
+        d = dict(zip(header, row))
+        ts = (d.get("Timestamp") or "").strip()
+        try:
+            dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        if not d.get("Ticker") or not d.get("Timeframe") or not d.get("Direction"):
+            continue
+        records.append({
+            "ticker": d["Ticker"],
+            "timeframe": d["Timeframe"],
+            "direction": d["Direction"],
+            "timestamp": dt,
+            "price": d.get("Price", ""),
+        })
+    return records
+
+
+# How long a signal at a given timeframe counts as "still current" for
+# the point system below. These signals fire rarely, so the window is
+# set generously per timeframe (in days) rather than a small multiple
+# of the bar period. Matched case-insensitively — any timeframe string
+# not in this map (e.g. if Daily/Weekly turn out to use different text
+# than expected) still gets a reasonable 12-day default rather than
+# being silently dropped.
+INDICES_TIMEFRAME_FRESHNESS_HOURS = {
+    "2H": 24 * 3, "3H": 24 * 4, "4H": 24 * 6, "DAILY": 24 * 12, "WEEKLY": 24 * 30,
+}
+INDICES_TIMEFRAME_DISPLAY_ORDER = ["2H", "3H", "4H", "Daily", "Weekly"]
+
+
+def compute_indices_point_system(records: list[dict]):
+    """Returns {direction: {timeframe: {"count", "total", "tickers"}}}.
+
+    The denominator ("total") for each direction is the number of
+    DISTINCT tickers ever seen signaling in that direction at all —
+    deliberately NOT a hardcoded expected list, since the actual set of
+    indices posting to these channels has already been observed not to
+    match an initially-assumed fixed count (e.g. US30USD appearing in a
+    Bottom signal despite an earlier assumption it was Top-only). This
+    way the denominator can never silently drift out of sync with
+    what's actually being tracked."""
+    if not records:
+        return {}
+
+    now = datetime.now()
+    by_direction: dict[str, list[dict]] = {}
+    for r in records:
+        by_direction.setdefault(r["direction"], []).append(r)
+
+    result = {}
+    for direction, recs in by_direction.items():
+        universe = {r["ticker"] for r in recs}
+        total = len(universe)
+
+        tf_result = {}
+        for tf in sorted({r["timeframe"] for r in recs}):
+            freshness_hours = INDICES_TIMEFRAME_FRESHNESS_HOURS.get(tf.upper(), 24 * 12)
+            cutoff = now - timedelta(hours=freshness_hours)
+            recent_tickers = sorted({
+                r["ticker"] for r in recs
+                if r["timeframe"] == tf and r["timestamp"] >= cutoff
+            })
+            tf_result[tf] = {"count": len(recent_tickers), "total": total, "tickers": recent_tickers}
+        result[direction] = tf_result
+
+    return result
+
 # ─── CHARTS ───────────────────────────────────────────────────────────────────
 
 def chart_stochastics_mini(data: dict, timeframe_label: str, ticker_label: str):
@@ -1622,6 +1715,32 @@ if _breadth:
     st.caption(f"Market Breadth as of {_breadth.get('Date', '—')}")
 else:
     st.info("No Market Breadth data yet.")
+
+# ── Indices Signal point system — how many of the tracked index tickers
+# have a current Bottom/Top signal at each timeframe ────────────────────
+st.markdown("**Indices Signals**")
+_indices_records = load_indices_signals()
+_indices_scores  = compute_indices_point_system(_indices_records)
+
+if not _indices_scores:
+    st.info("No Indices Signals data yet.")
+else:
+    for _direction in ["Bottom", "Top"]:
+        _tf_scores = _indices_scores.get(_direction)
+        if not _tf_scores:
+            continue
+        st.caption(f"Indices {_direction} Signals")
+        _ordered_tfs = [tf for tf in INDICES_TIMEFRAME_DISPLAY_ORDER if tf in _tf_scores]
+        _ordered_tfs += [tf for tf in _tf_scores if tf not in _ordered_tfs]
+        _idx_cols = st.columns(len(_ordered_tfs))
+        for _col, _tf in zip(_idx_cols, _ordered_tfs):
+            _data = _tf_scores[_tf]
+            _col.metric(_tf, f"{_data['count']}/{_data['total']}")
+        with st.expander(f"Which indices — {_direction}"):
+            for _tf in _ordered_tfs:
+                _data = _tf_scores[_tf]
+                _tickers_str = ", ".join(_data["tickers"]) if _data["tickers"] else "none currently"
+                st.caption(f"**{_tf}**: {_tickers_str}")
 
 # ── Market Trend — Stochastics (K/D) for SPX500USD and NAS100USD ──────────────
 st.markdown("---")
